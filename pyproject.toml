@@ -1,0 +1,148 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aiidalab-feff"
+version = "0.1.0a1"
+description = "AiiDAlab app for FEFF-based EXAFS and MD-EXAFS calculations"
+authors = [{name = "J. Kane Shenton", email = "kane.shenton@stfc.ac.uk"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AiiDA",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+keywords = ["aiida", "feff", "exafs", "xas", "md-exafs", "aiidalab"]
+requires-python = ">=3.10"
+dependencies = [
+    "aiida-core>=2.3,<3",
+    "aiida-feff",
+    "aiidalab",
+    "aiidalab-widgets-base",
+    "alc-aiidalab-widgets",
+    "ipywidgets>=8",
+    "ipympl>=0.9",
+    "traitlets>=5",
+    "matplotlib>=3.6",
+    "numpy>=1.21",
+    "pandas>=2.0",
+    "ase>=3.22",
+    "weas-widget>=0.1.26",
+    "altair>=5.0",
+    # REST API for the aiida-explorer button
+    "flask-cors",
+    "flask-restful",
+]
+
+[project.optional-dependencies]
+testing = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+pre-commit = [
+    "pre-commit>=3.0",
+    "ruff>=0.6.0",
+    "mypy>=1.10",
+]
+
+[project.entry-points."aiidalab.apps"]
+aiidalab_feff = "aiidalab_feff:main"
+
+
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [
+    ".git",
+    ".venv",
+    ".tox",
+    ".pytest_cache",
+    ".mypy_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "setup.cfg",
+    "*.ipynb",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+    "N",
+    "D",
+    "PL",
+]
+ignore = [
+    "D100",
+    "D104",
+    "D203",
+    "D213",
+    "D416",
+    "N806",
+    "PLC0415",
+    "PLR0915",
+    "PLR2004",
+]
+
+[tool.ruff.lint.pylint]
+max-args = 12
+max-branches = 24
+max-statements = 100
+
+[tool.ruff.lint.per-file-ignores]
+"src/aiidalab_feff/input.py" = ["D107", "D102"]
+"src/aiidalab_feff/main.py" = ["D107", "D102"]
+"src/aiidalab_feff/process.py" = ["D107", "D102"]
+"src/aiidalab_feff/resources.py" = ["D107", "D102"]
+"src/aiidalab_feff/results.py" = ["D107", "D102"]
+"src/aiidalab_feff/widgets/paths_explorer.py" = ["D107", "D102"]
+"src/aiidalab_feff/workflow.py" = ["D107", "D102"]
+"tests/**/*.py" = ["D", "N806", "PLC0415", "B017", "E501", "PLR2004"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["aiidalab_feff"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = [
+    "^tests/",
+]
+show_error_codes = true
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.uv.sources]
+aiida-feff = { path = "../stfc_aiida-feff", editable = true }
+alc-aiidalab-widgets = { path = "../alc-aiidalab-widgets", editable = true }

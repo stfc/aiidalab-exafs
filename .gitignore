@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.env
+*.swp
+*.swo
+*.ipynb_checkpoints/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.h5
+*.hdf5
+
+# Appmode temporary notebook copies (e.g. .main-0.ipynb)
+/.main-*.ipynb
+
+# Serena language-server cache
+.serena/

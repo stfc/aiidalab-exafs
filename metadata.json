@@ -1,0 +1,10 @@
+{
+    "title": "AiiDAlab FEFF",
+    "description": "AiiDAlab app for FEFF-based EXAFS and MD-EXAFS calculations",
+    "authors": "J. Kane Shenton",
+    "logo": "logo.svg",
+    "categories": [
+        "spectroscopy"
+    ],
+    "state": "development"
+}
