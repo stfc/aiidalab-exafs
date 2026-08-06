@@ -6,7 +6,6 @@ import ipywidgets as ipw
 from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_feff.common.navigation import (
-    create_load_from_pk_button,
     create_new_calculation_button,
 )
 from aiidalab_feff.input import InputWidget
@@ -14,6 +13,7 @@ from aiidalab_feff.models import InputModel, ResultsModel, SubmissionModel, Work
 from aiidalab_feff.process import ProcessWidget
 from aiidalab_feff.resources import ResourcesWidget
 from aiidalab_feff.results import ResultsWidget
+from aiidalab_feff.results_library import ResultsLibraryWidget
 from aiidalab_feff.workflow import FeffParametersWidget
 
 
@@ -74,27 +74,34 @@ class FeffApp(ipw.VBox):
         self.next_button.on_click(self._on_next)
 
         self.new_button = create_new_calculation_button(self)
-        self.load_box, self.load_input = create_load_from_pk_button(self, self.submission_model)
 
         self.nav_bar = ipw.HBox(
             [
                 self.back_button,
                 self.next_button,
                 self.new_button,
-                self.load_box,
             ]
         )
 
         self.content = ipw.VBox()
         self.status = Status()
-
-        super().__init__(
+        self.new_calculation_view = ipw.VBox(
             [
-                self.header,
                 self.progress,
                 self.nav_bar,
                 self.status,
                 self.content,
+            ]
+        )
+        self.results_library = ResultsLibraryWidget(self._open_saved_results)
+        self.app_tabs = ipw.Tab(children=[self.new_calculation_view, self.results_library])
+        self.app_tabs.set_title(0, "New calculation")
+        self.app_tabs.set_title(1, "Previous results")
+
+        super().__init__(
+            [
+                self.header,
+                self.app_tabs,
             ]
         )
 
@@ -119,6 +126,12 @@ class FeffApp(ipw.VBox):
         if self._current_step > 0:
             self._current_step -= 1
             self._update_view()
+
+    def _open_saved_results(self, process_node):
+        """Load a selected successful workflow into the results view."""
+        self.reset()
+        self.app_tabs.selected_index = 0
+        self.submission_model.process_node = process_node
 
     def _go_to_step(self, step: int):
         """Jump to the given step if it is valid."""
