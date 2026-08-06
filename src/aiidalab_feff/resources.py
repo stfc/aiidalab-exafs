@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipywidgets as ipw
 from aiida import orm
 from aiida.orm import Code, Computer, QueryBuilder
+from alc_aiidalab_widgets.widgets.code_setup import CodeSetupWidget
 from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_feff.models import WorkflowModel
@@ -95,20 +96,17 @@ class ResourcesWidget(ipw.VBox):
         )
         self.batch_box.layout.display = "none"
 
-        self.scarf_button = ipw.Button(
-            description="Import SCARF preset",
-            button_style="info",
-            icon="cloud-download",
-            layout={"display": "none"},
-        )
-        self.scarf_button.on_click(self._import_scarf_preset)
-
         self.configure_button = ipw.Button(
-            description="Configure code",
+            description="Configure remote code",
             button_style="warning",
             icon="cog",
         )
         self.configure_button.on_click(self._configure_code)
+        self.code_setup = CodeSetupWidget()
+        self.code_setup_panel = ipw.Accordion(children=[self.code_setup])
+        self.code_setup_panel.set_title(0, "Configure an AiiDA computer and code")
+        self.code_setup_panel.selected_index = None
+        self.code_setup_panel.observe(self._on_code_setup_panel_change, names="selected_index")
 
         self.status = Status()
 
@@ -120,7 +118,8 @@ class ResourcesWidget(ipw.VBox):
                 self.scheduler_box,
                 self.batch_toggle,
                 self.batch_box,
-                ipw.HBox([self.configure_button, self.scarf_button]),
+                self.configure_button,
+                self.code_setup_panel,
                 self.status,
             ]
         )
@@ -148,7 +147,7 @@ class ResourcesWidget(ipw.VBox):
         else:
             self.model.computer = orm.load_computer(change["new"])
         self._refresh_codes()
-        self._update_scarf_button()
+        self._refresh_python_codes()
 
     def _on_code_change(self, change):
         if change["new"] is None:
@@ -187,6 +186,7 @@ class ResourcesWidget(ipw.VBox):
         computer = self.model.computer
         query = QueryBuilder()
         if computer is not None:
+            assert isinstance(computer, Computer)
             query.append(Computer, filters={"uuid": computer.uuid}, tag="computer")
             query.append(Code, with_computer="computer")
         else:
@@ -196,34 +196,35 @@ class ResourcesWidget(ipw.VBox):
             if isinstance(code, Code) and code.label:
                 options.append((code.label, code.uuid))
         self.code_selector.options = [("", None)] + options
-        self.python_code_selector.options = [("", None)] + options
 
     def _refresh_python_codes(self):
         query = QueryBuilder()
-        query.append(Code)
+        computer = self.model.computer
+        if computer is not None:
+            assert isinstance(computer, Computer)
+            query.append(Computer, filters={"uuid": computer.uuid}, tag="computer")
+            query.append(Code, with_computer="computer")
+        else:
+            query.append(Code)
         options = []
         for code in query.all(flat=True):
-            if code.label:
+            if code.label and code.default_calc_job_plugin == "feff.feff_batch":
                 options.append((code.label, code.uuid))
         self.python_code_selector.options = [("", None)] + options
 
-    def _update_scarf_button(self):
-        if self.model.computer is not None and self.model.computer.label.lower() == "scarf":  # type: ignore[attr-defined]
-            self.scarf_button.layout.display = "block"
-        else:
-            self.scarf_button.layout.display = "none"
-
-    def _import_scarf_preset(self, _):
-        # Placeholder for SCARF preset import logic.
-        self.status.value = "SCARF preset import not yet implemented in this app."
-
     def _configure_code(self, _):
-        if self.model.computer is not None and self.model.computer.label.lower() == "scarf":  # type: ignore[attr-defined]
-            self._import_scarf_preset(None)
-        else:
-            self.status.value = (
-                "Configure a FEFF code via `verdi code create` or the AiiDA code setup UI."
-            )
+        """Open the shared GUI for configuring an AiiDA computer and code."""
+        self.code_setup_panel.selected_index = 0
+        self.status.value = (
+            "Choose a resource and complete its setup below. "
+            "Close this panel when configuration finishes to refresh the selectors."
+        )
+
+    def _on_code_setup_panel_change(self, change):
+        """Refresh selectable resources after the setup panel is closed."""
+        if change["old"] == 0 and change["new"] is None:
+            self._refresh()
+            self.status.value = "Resources refreshed. Select the configured computer and code."
 
     def validate(self) -> list[str]:
         """Return a list of validation error messages."""
@@ -239,8 +240,8 @@ class ResourcesWidget(ipw.VBox):
         if self.batch_toggle.value:
             if self.model.python_code is None:
                 errors.append("Batch mode requires a Python interpreter code.")
-            if self.batch_size.value <= 0:
-                errors.append("Batch size must be greater than 0.")
+            if self.batch_size.value <= 1:
+                errors.append("Batch size must be greater than 1.")
             if self.n_workers.value <= 0:
                 errors.append("Workers per batch must be greater than 0.")
         return errors
