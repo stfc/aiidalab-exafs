@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import csv
+from io import StringIO
+
 import ipywidgets as ipw
 import numpy as np
 from aiida import orm
 from aiida_feff.data.xasdata import XasData
+from alc_aiidalab_widgets.widgets.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_feff.models import ResultsModel
@@ -21,7 +25,7 @@ _KWEIGHTS = [
 ]
 
 
-def _new_figure():
+def _new_figure(figsize=(6, 4)):
     """Create an ipympl-backed figure + axes pair, bypassing the pyplot state
     machine so the figure is never auto-displayed in the calling cell.
 
@@ -38,7 +42,7 @@ def _new_figure():
     # Importing the backend registers it and exposes its canvas factory.
     from ipympl.backend_nbagg import new_figure_manager_given_figure
 
-    fig = Figure(figsize=(6, 4))
+    fig = Figure(figsize=figsize)
     # Attaches a widget FigureCanvas + manager to ``fig``. Number 0 is unused
     # since we don't register this figure with the pyplot figure manager map.
     new_figure_manager_given_figure(0, fig)
@@ -62,16 +66,16 @@ def _ft_larch(k: np.ndarray, chi: np.ndarray, kmin: float, kmax: float,
     return grp.r, np.abs(grp.chir)
 
 
-def _new_figure_2subplots(figsize=(6, 6)):
-    """Like :func:`_new_figure` but returns (fig, ax_top, ax_bottom)."""
+def _new_figure_2subplots(figsize=(10, 3)):
+    """Like :func:`_new_figure` but returns two side-by-side axes."""
     from matplotlib.figure import Figure
 
     from ipympl.backend_nbagg import new_figure_manager_given_figure
 
     fig = Figure(figsize=figsize)
     new_figure_manager_given_figure(0, fig)
-    ax_top, ax_bottom = fig.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [3, 1]})
-    return fig, ax_top, ax_bottom
+    ax_left, ax_right = fig.subplots(1, 2)
+    return fig, ax_left, ax_right
 
 
 def _average_xas_on_common_k(xas_nodes):
@@ -109,9 +113,9 @@ class ResultsWidget(ipw.VBox):
         # Persistent matplotlib figures — created once, mounted in their tabs
         # once, and redrawn on every render. We never replace a tab's children
         # with a fresh canvas, so plots can't stack up between refreshes.
-        self._fig_chi_k, self._ax_chi_k = _new_figure()
-        self._fig_chi_r, self._ax_chi_r = _new_figure()
-        # Convergence figure has two subplots: χ(k) average (top) + residual (bottom)
+        self._fig_chi_k, self._ax_chi_k = _new_figure(figsize=(4, 3))
+        self._fig_chi_r, self._ax_chi_r = _new_figure(figsize=(4, 3))
+        # Convergence figure compares the selected subset in k and R space.
         self._fig_conv, self._ax_conv, self._ax_conv_resid = _new_figure_2subplots()
 
         # --- interactive plot controls (shared chi(k)/chi(R) k-weight + FT) --
@@ -125,6 +129,12 @@ class ResultsWidget(ipw.VBox):
         self.ft_kmax = ipw.FloatText(value=14.0, step=0.1, description="k_max:", layout={"width": "140px"})
         self.ft_dk = ipw.FloatText(value=1.0, step=0.1, description="Δk:", layout={"width": "140px"})
         self.ft_rmax = ipw.FloatText(value=8.0, step=0.5, description="R_max (Å):", layout={"width": "160px"})
+        self.show_legends = ipw.Checkbox(
+            value=False,
+            description="Show legends",
+            indent=False,
+            layout={"width": "130px"},
+        )
 
         # Convergence-tab k-weight (independent from chi(k)/chi(R) tabs).
         self.conv_kweight = ipw.Dropdown(
@@ -165,32 +175,110 @@ class ResultsWidget(ipw.VBox):
         self.ft_kmax.observe(self._on_ft_change, names="value")
         self.ft_dk.observe(self._on_ft_change, names="value")
         self.ft_rmax.observe(self._on_ft_change, names="value")
+        self.show_legends.observe(self._on_legend_change, names="value")
         self.conv_kweight.observe(self._on_conv_change, names="value")
         self.conv_sites.observe(self._on_conv_change, names="value")
         self.conv_frames.observe(self._on_conv_change, names="value")
 
-        self.chi_k_tab = ipw.VBox([
-            ipw.HBox([self.kweight], layout={"margin": "0 0 4px 0"}),
-            self._fig_chi_k.canvas,
-        ])
-        self.chi_r_tab = ipw.VBox([
-            ipw.HBox([self.kweight, self.ft_kmin, self.ft_kmax, self.ft_dk, self.ft_rmax],
-                     layout={"margin": "0 0 4px 0", "flex_flow": "row wrap"}),
-            self._fig_chi_r.canvas,
-        ])
         self.convergence_tab = ipw.VBox([self.conv_box, self._fig_conv.canvas])
         self.paths_tab = ipw.VBox()
+        self.export_spectrum = ipw.Dropdown(description="Spectrum:", options=[])
+        self.export_spectrum.observe(self._on_spectrum_change, names="value")
+        self.chi_k_preview = ipw.HTML("<em>No spectrum data available.</em>")
+        self.chi_r_preview = ipw.HTML("<em>No Fourier-transform data available.</em>")
+        self.chi_k_download_output = ipw.Output()
+        self.chi_r_download_output = ipw.Output()
+        self.download_chi_k = Download(
+            "feff-exafs-chi-k.csv",
+            cb=self._chi_k_csv,
+            output=self.chi_k_download_output,
+            mimetype="text/csv",
+            description="Download CSV",
+            icon="download",
+            disabled=True,
+        )
+        self.download_chi_r = Download(
+            "feff-exafs-chi-r.csv",
+            cb=self._chi_r_csv,
+            output=self.chi_r_download_output,
+            mimetype="text/csv",
+            description="Download CSV",
+            icon="download",
+            disabled=True,
+        )
+        self.chi_k_export = ipw.Accordion(
+            [
+                ipw.VBox(
+                    [
+                        ipw.HTML("Preview and CSV use the selected k-weight."),
+                        self.download_chi_k,
+                        self.chi_k_preview,
+                        self.chi_k_download_output,
+                    ]
+                )
+            ]
+        )
+        self.chi_k_export.set_title(0, "View and download χ(k) data")
+        self.chi_r_export = ipw.Accordion(
+            [
+                ipw.VBox(
+                    [
+                        ipw.HTML("Preview and CSV use the k-weight and FT settings above."),
+                        self.download_chi_r,
+                        self.chi_r_preview,
+                        self.chi_r_download_output,
+                    ]
+                )
+            ]
+        )
+        self.chi_r_export.set_title(0, "View and download χ(R) data")
+        self.spectrum_controls = ipw.HBox(
+            [
+                self.export_spectrum,
+                self.kweight,
+                self.ft_kmin,
+                self.ft_kmax,
+                self.ft_dk,
+                self.ft_rmax,
+                self.show_legends,
+            ],
+            layout={"margin": "0 0 8px 0", "flex_flow": "row wrap"},
+        )
+        self.chi_k_panel = ipw.VBox(
+            [
+                ipw.HTML("<h3>χ(k)</h3>"),
+                self._fig_chi_k.canvas,
+                self.chi_k_export,
+            ],
+            layout={"flex": "1 1 0", "min_width": "0", "padding": "0 0.75em 0 0"},
+        )
+        self.chi_r_panel = ipw.VBox(
+            [
+                ipw.HTML("<h3>χ(R)</h3>"),
+                self._fig_chi_r.canvas,
+                self.chi_r_export,
+            ],
+            layout={"flex": "1 1 0", "min_width": "0", "padding": "0 0 0 0.75em"},
+        )
+        self.spectrum_tab = ipw.VBox(
+            [
+                ipw.HTML("<h2>Spectrum</h2>"),
+                self.spectrum_controls,
+                ipw.HBox(
+                    [self.chi_k_panel, self.chi_r_panel],
+                    layout={"align_items": "flex-start", "width": "100%"},
+                ),
+            ]
+        )
 
         self.tabs.children = [
-            self.chi_k_tab,
-            self.chi_r_tab,
+            self.spectrum_tab,
             self.convergence_tab,
             self.paths_tab,
         ]
-        self.tabs.set_title(0, "χ(k)")
-        self.tabs.set_title(1, "χ(R)")
-        self.tabs.set_title(2, "Convergence")
-        self.tabs.set_title(3, "Path contributions")
+        self.tabs.set_title(0, "Spectrum")
+        self.tabs.set_title(1, "Convergence")
+        self.tabs.set_title(2, "Path contributions")
 
         self.reset_button = ipw.Button(
             description="Refresh results",
@@ -225,9 +313,24 @@ class ResultsWidget(ipw.VBox):
         """k-weight changed → redraw both chi(k) (weighted) and chi(R) (re-FT)."""
         self._render_chi_k()
         self._render_chi_r()
+        self._render_exports()
 
     def _on_ft_change(self, _):
         self._render_chi_r()
+        self._render_chi_r_export()
+        self._render_convergence()
+
+    def _on_legend_change(self, _):
+        """Apply the legend preference to all spectrum and convergence plots."""
+        self._render_chi_k()
+        self._render_chi_r()
+        self._render_convergence()
+
+    def _on_spectrum_change(self, _):
+        """Redraw charts and raw-data previews for the selected spectrum."""
+        self._render_chi_k()
+        self._render_chi_r()
+        self._render_exports()
 
     def _on_conv_change(self, _):
         self._render_convergence()
@@ -251,6 +354,11 @@ class ResultsWidget(ipw.VBox):
             self._clear_figure(self._ax_conv)
             self._clear_figure(self._ax_conv_resid)
             self.conv_box.layout.display = "none"
+            self.export_spectrum.options = []
+            self.chi_k_preview.value = "<em>No spectrum data available.</em>"
+            self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"
+            self.download_chi_k.disabled = True
+            self.download_chi_r.disabled = True
             return
 
         node = self.results_model.process_node
@@ -265,6 +373,7 @@ class ResultsWidget(ipw.VBox):
         # Populate the convergence sub-sampling selectors from the grid.
         self._populate_conv_selectors()
 
+        self._populate_export_spectra()
         self._render_chi_k()
         self._render_chi_r()
         self._render_convergence()
@@ -323,14 +432,13 @@ class ResultsWidget(ipw.VBox):
 
     # ── per-tab renders ───────────────────────────────────────────────────
     def _render_chi_k(self):
-        averaged_xas = self.results_model.averaged_xas
         ax = self._ax_chi_k
         ax.clear()
-        if averaged_xas is None or "all" not in averaged_xas:
+        xas = self._selected_export_spectrum()
+        if xas is None:
             self._redraw(self._fig_chi_k)
             return
 
-        xas = averaged_xas["all"]
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
         n = int(self.kweight.value)
@@ -343,19 +451,19 @@ class ResultsWidget(ipw.VBox):
             ax.fill_between(k, weighted - std, weighted + std, alpha=0.3, label="±1σ")
         ax.set_xlabel("k (Å⁻¹)")
         ax.set_ylabel(label)
-        ax.legend()
-        ax.set_title(self._spectrum_title(f"Average {label}"))
+        if self.show_legends.value:
+            ax.legend()
+        ax.set_title(self._spectrum_title(f"{self._selected_spectrum_label()} {label}"))
         self._redraw(self._fig_chi_k)
 
     def _render_chi_r(self):
-        averaged_xas = self.results_model.averaged_xas
         ax = self._ax_chi_r
         ax.clear()
-        if averaged_xas is None or "all" not in averaged_xas:
+        xas = self._selected_export_spectrum()
+        if xas is None:
             self._redraw(self._fig_chi_r)
             return
 
-        xas = averaged_xas["all"]
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
         kweight = int(self.kweight.value)
@@ -376,20 +484,15 @@ class ResultsWidget(ipw.VBox):
         ax.plot(r, chir_mag, label=f"|χ(R)|  ({kw_lbl}, k={kmin:g}–{kmax:g} Å⁻¹)")
         ax.set_xlabel("R (Å)")
         ax.set_ylabel("|χ(R)|")
-        ax.legend()
-        ax.set_title(self._spectrum_title(f"|χ(R)| magnitude  ({kw_lbl} FT)"))
+        if self.show_legends.value:
+            ax.legend()
+        ax.set_title(self._spectrum_title(
+            f"{self._selected_spectrum_label()} |χ(R)| ({kw_lbl} FT)"
+        ))
         self._redraw(self._fig_chi_r)
 
     def _render_convergence(self):
-        """Convergence / sub-sampling view.
-
-        Top axis: the ensemble-averaged χ(k)·kⁿ over the currently-selected
-        subset of sites and frames (faint per-site averages overlaid).
-
-        Bottom axis: the residual — (sub-sampled average) minus (full ensemble
-        average) — so you can see how dropping sites/frames affects the result
-        relative to the complete run.
-        """
+        """Compare selected-subset convergence in χ(k) and χ(R)."""
         averaged_xas = self.results_model.averaged_xas
         ax_top = self._ax_conv
         ax_resid = self._ax_conv_resid
@@ -408,7 +511,7 @@ class ResultsWidget(ipw.VBox):
             self._redraw(self._fig_conv)
             return
 
-        # Full ensemble average (the gold-standard baseline for the residual).
+        # Full ensemble average is the reference for the selected subset.
         full_xas = averaged_xas.get("all")
         if full_xas is None:
             ax_top.set_title("Full ensemble average unavailable.")
@@ -436,11 +539,7 @@ class ResultsWidget(ipw.VBox):
         k_sub, chi_sub_avg, _ = _average_xas_on_common_k(subset_nodes)
         chi_sub_w = chi_sub_avg * (k_sub ** n) if n else chi_sub_avg
 
-        # Interpolate full onto the same k-grid for the residual.
-        chi_full_interp = np.interp(k_sub, k_full, chi_full, left=0.0, right=0.0)
-        resid = chi_sub_w - (chi_full_interp * (k_sub ** n) if n else chi_full_interp)
-
-        # --- top: sub-sampled average + faint per-site averages ---
+        # --- left: sub-sampled χ(k) average + faint per-site averages ---
         ax_top.plot(k_sub, chi_sub_w, color="C0", lw=2,
                     label=f"Subset avg ({n_sel}/{n_total} runs)")
         # Full ensemble average (all sites, all frames) as a reference line.
@@ -459,19 +558,34 @@ class ResultsWidget(ipw.VBox):
                         label=f"Site {s}")
 
         ax_top.set_ylabel(kw_lbl)
-        ax_top.legend(fontsize=8)
-        n_sites = len(sel_sites)
-        n_frames = len(sel_frames)
-        ax_top.set_title(self._spectrum_title(
-            f"Convergence — {n_sel}/{n_total} runs "
-            f"({n_frames} frames×{n_sites} sites)"))
+        ax_top.set_xlabel("k (Å⁻¹)")
+        if self.show_legends.value:
+            ax_top.legend(fontsize=8)
+        ax_top.set_title(f"χ(k) convergence ({n_sel}/{n_total} runs)")
 
-        # --- bottom: residual vs full ensemble ---
-        ax_resid.plot(k_sub, resid, color="C3", lw=1.5)
-        ax_resid.axhline(0, color="k", lw=0.5, ls="--")
-        ax_resid.set_xlabel("k (Å⁻¹)")
-        ax_resid.set_ylabel(f"Δ {kw_lbl}")
-        ax_resid.set_title("Residual vs full ensemble", fontsize=9)
+        # --- right: the same subset/full comparison after Fourier transform ---
+        try:
+            r_sub, chir_sub = _ft_larch(
+                k_sub, chi_sub_avg, float(self.ft_kmin.value),
+                float(self.ft_kmax.value), n, float(self.ft_dk.value),
+                float(self.ft_rmax.value),
+            )
+            r_full, chir_full = _ft_larch(
+                k_full, chi_full, float(self.ft_kmin.value),
+                float(self.ft_kmax.value), n, float(self.ft_dk.value),
+                float(self.ft_rmax.value),
+            )
+        except Exception as exc:  # noqa: BLE001
+            ax_resid.set_title("χ(R) transform failed")
+            ax_resid.text(0.5, 0.5, str(exc), ha="center", va="center", transform=ax_resid.transAxes)
+        else:
+            ax_resid.plot(r_sub, chir_sub, color="C0", lw=2, label=f"Subset avg ({n_sel}/{n_total} runs)")
+            ax_resid.plot(r_full, chir_full, color="k", lw=1.5, ls="--", label=f"Full ensemble ({n_total} runs)")
+            ax_resid.set_xlabel("R (Å)")
+            ax_resid.set_ylabel("|χ(R)|")
+            ax_resid.set_title(f"χ(R) convergence ({kw_lbl} FT)")
+            if self.show_legends.value:
+                ax_resid.legend(fontsize=8)
 
         self._redraw(self._fig_conv)
 
@@ -493,6 +607,160 @@ class ResultsWidget(ipw.VBox):
         )
         self.paths_tab.children = [explorer]
 
+    def _populate_export_spectra(self):
+        """Populate the χ(k)/χ(R) export selector with averaged spectra."""
+        averaged_xas = self.results_model.averaged_xas or {}
+        options = [("Ensemble average", "all")] if "all" in averaged_xas else []
+        options.extend(
+            (f"Site {key.removeprefix('site_')}", key)
+            for key in sorted(averaged_xas)
+            if key.startswith("site_")
+        )
+        previous = self.export_spectrum.value
+        self.export_spectrum.options = options
+        if previous in dict(options):
+            self.export_spectrum.value = previous
+        elif options:
+            self.export_spectrum.value = options[0][1]
+        self._render_exports()
+
+    def _render_exports(self, _=None):
+        """Refresh both data exports for the selected spectrum."""
+        self._render_chi_k_export()
+        self._render_chi_r_export()
+
+    def _render_chi_k_export(self):
+        """Preview and export the selected k-weighted χ(k) spectrum."""
+        xas = self._selected_export_spectrum()
+        if xas is None:
+            self.chi_k_preview.value = "<em>No spectrum data available.</em>"
+            self.download_chi_k.disabled = True
+            return
+        k = np.asarray(xas.get_array("k"), dtype=float)
+        chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        kweight = int(self.kweight.value)
+        weighted = chi_k * (k ** kweight) if kweight else chi_k
+        rows = _format_preview_rows(
+            zip(k[:20], chi_k[:20], weighted[:20], strict=True)
+        )
+        remaining = (
+            "" if len(k) <= 20 else f"<p><em>{len(k) - 20} further rows are in the download.</em></p>"
+        )
+        self.chi_k_preview.value = (
+            f"<p>{len(k)} points. Preview of the first {min(len(k), 20)}:</p>"
+            + _format_preview_table(
+                ["k (Å⁻¹)", "χ(k)", self._kweight_label(kweight)],
+                rows,
+            )
+            + remaining
+        )
+        self.download_chi_k.filename = f"feff-exafs-{self.export_spectrum.value}-chi-k.csv"
+        self.download_chi_k.disabled = False
+
+    def _render_chi_r_export(self):
+        """Preview and export |χ(R)| using the active Fourier-transform settings."""
+        xas = self._selected_export_spectrum()
+        if xas is None:
+            self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"
+            self.download_chi_r.disabled = True
+            return
+        try:
+            r, chir_mag = self._chi_r_arrays(xas)
+        except Exception as exc:  # noqa: BLE001
+            self.chi_r_preview.value = f"<em>Fourier transform unavailable: {exc}</em>"
+            self.download_chi_r.disabled = True
+            return
+        rows = _format_preview_rows(
+            zip(r[:20], chir_mag[:20], strict=True)
+        )
+        remaining = (
+            "" if len(r) <= 20 else f"<p><em>{len(r) - 20} further rows are in the download.</em></p>"
+        )
+        self.chi_r_preview.value = (
+            f"<p>{len(r)} points. Preview of the first {min(len(r), 20)}:</p>"
+            + _format_preview_table(["R (Å)", "|χ(R)|"], rows)
+            + remaining
+        )
+        self.download_chi_r.filename = f"feff-exafs-{self.export_spectrum.value}-chi-r.csv"
+        self.download_chi_r.disabled = False
+
+    def _selected_export_spectrum(self):
+        """Return the XAS node selected for χ(k) and χ(R) exports."""
+        key = self.export_spectrum.value
+        averaged_xas = self.results_model.averaged_xas or {}
+        return averaged_xas.get(key) if key else None
+
+    def _selected_spectrum_label(self) -> str:
+        """Return the human-readable label for the selected plotted spectrum."""
+        selected = self.export_spectrum.value
+        return next(
+            (label for label, value in self.export_spectrum.options if value == selected),
+            "Selected",
+        )
+
+    def _chi_k_csv(self) -> str:
+        """Serialize the selected k-weighted χ(k) spectrum as CSV."""
+        xas = self._selected_export_spectrum()
+        if xas is None:
+            return ""
+        k = np.asarray(xas.get_array("k"), dtype=float)
+        chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        kweight = int(self.kweight.value)
+        weighted = chi_k * (k ** kweight) if kweight else chi_k
+        output = StringIO()
+        writer = csv.writer(output)
+        _write_export_metadata(
+            output,
+            **self._common_export_metadata(),
+            spectrum=self.export_spectrum.value,
+            kweight=kweight,
+        )
+        writer.writerow(["k_angstrom_inverse", "chi_k", f"chi_k_times_k_to_{kweight}"])
+        writer.writerows(zip(k, chi_k, weighted, strict=True))
+        return output.getvalue()
+
+    def _chi_r_arrays(self, xas: XasData):
+        """Calculate |χ(R)| using the active χ(R) control values."""
+        return _ft_larch(
+            np.asarray(xas.get_array("k"), dtype=float),
+            np.asarray(xas.get_array("chi_k"), dtype=float),
+            float(self.ft_kmin.value),
+            float(self.ft_kmax.value),
+            int(self.kweight.value),
+            float(self.ft_dk.value),
+            float(self.ft_rmax.value),
+        )
+
+    def _chi_r_csv(self) -> str:
+        """Serialize the selected |χ(R)| transform as CSV."""
+        xas = self._selected_export_spectrum()
+        if xas is None:
+            return ""
+        r, chir_mag = self._chi_r_arrays(xas)
+        output = StringIO()
+        writer = csv.writer(output)
+        _write_export_metadata(
+            output,
+            **self._common_export_metadata(),
+            spectrum=self.export_spectrum.value,
+            kweight=int(self.kweight.value),
+            kmin=float(self.ft_kmin.value),
+            kmax=float(self.ft_kmax.value),
+            dk=float(self.ft_dk.value),
+            rmax=float(self.ft_rmax.value),
+        )
+        writer.writerow(["r_angstrom", "chi_r_magnitude"])
+        writer.writerows(zip(r, chir_mag, strict=True))
+        return output.getvalue()
+
+    def _common_export_metadata(self) -> dict[str, str | int | None]:
+        """Return workflow and spectrum context common to all exports."""
+        process_node = self.results_model.process_node
+        return {
+            "process_pk": getattr(process_node, "pk", None),
+            "spectrum_title": self.results_model.spectrum_title or "unspecified",
+        }
+
     def reset(self):
         self.status.value = ""
         self.pk_label.value = ""
@@ -503,6 +771,11 @@ class ResultsWidget(ipw.VBox):
         self._clear_figure(self._ax_conv)
         self._clear_figure(self._ax_conv_resid)
         self.paths_tab.children = []
+        self.export_spectrum.options = []
+        self.chi_k_preview.value = "<em>No spectrum data available.</em>"
+        self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"
+        self.download_chi_k.disabled = True
+        self.download_chi_r.disabled = True
         self.conv_box.layout.display = "none"
         # Clear sub-sampling selectors.
         self.conv_sites.options = []
@@ -510,6 +783,37 @@ class ResultsWidget(ipw.VBox):
         self.conv_sites.value = ()
         self.conv_frames.value = ()
         self.results_model.reset()
+
+
+def _format_preview_rows(rows) -> str:
+    """Format numeric rows for the compact HTML data previews."""
+    return "".join(
+        "<tr>" + "".join(f"<td>{value:.7g}</td>" for value in row) + "</tr>"
+        for row in rows
+    )
+
+
+def _format_preview_table(headers: list[str], rows: str) -> str:
+    """Render a readable table with consistent column spacing."""
+    header_cells = "".join(f"<th>{header}</th>" for header in headers)
+    return (
+        '<table class="feff-data-preview" style="border-collapse: collapse; margin: 0.5em 0;">'
+        f"<thead><tr>{header_cells}</tr></thead>"
+        f'<tbody style="font-family: monospace;">{rows}</tbody></table>'
+        "<style>"
+        ".feff-data-preview th, .feff-data-preview td { "
+        "padding: 0.3em 1.25em 0.3em 0.5em; text-align: right; }"
+        ".feff-data-preview th { border-bottom: 2px solid #bbb; }"
+        ".feff-data-preview td { border-bottom: 1px solid #eee; }"
+        "</style>"
+    )
+
+
+def _write_export_metadata(output: StringIO, **metadata) -> None:
+    """Write portable comment headers before CSV columns and data."""
+    output.write("# AiiDAlab FEFF data export\n")
+    for key, value in metadata.items():
+        output.write(f"# {key}: {value}\n")
 
 
 def get_spectrum_arrays(xas: XasData) -> tuple[np.ndarray, np.ndarray]:
