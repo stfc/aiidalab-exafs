@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import ipywidgets as ipw
 from aiida import orm
-from aiida.orm import Group, QueryBuilder, StructureData, TrajectoryData
+from aiida.orm import StructureData, TrajectoryData
+from alc_aiidalab_widgets.widgets.database import AiiDADatabaseQueryWidget
 from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_feff.absorber import AbsorberSelectorWidget
@@ -252,69 +253,172 @@ class FileListInputWidget(ipw.VBox):
         self.model.structures = {}
 
 
-class GroupInputWidget(ipw.VBox):
-    """Select an AiiDA Group containing StructureData nodes."""
+
+class DatabaseInputWidget(ipw.VBox):
+    """Select a stored structure or trajectory from the AiiDA database."""
 
     def __init__(self, model: InputModel):
         self.model = model
-
-        self.refresh_button = ipw.Button(
-            description="Refresh groups",
-            icon="refresh",
+        self.node_type_selector = ipw.RadioButtons(
+            options=[
+                ("Structures and trajectories", "both"),
+                ("Single structures", "structure"),
+                ("Trajectories", "trajectory"),
+            ],
+            value="both",
+            description="Search for:",
+            style={"description_width": "initial"},
         )
-        self.refresh_button.on_click(self._refresh_groups)
-
-        self.group_selector = ipw.Dropdown(
-            options=[],
-            description="Group:",
-            layout={"width": "400px"},
+        self.node_type_selector.observe(self._on_node_type_change, names="value")
+        self.database_query = AiiDADatabaseQueryWidget(
+            title="Select an AiiDA structure or trajectory",
+            query=[StructureData, TrajectoryData],
         )
-        self.group_selector.observe(self._on_group_change, names="value")
+        self.database_query.observe(self._on_node_change, names="data_object")
 
+        self.stride = ipw.IntSlider(
+            value=1,
+            min=1,
+            max=100,
+            step=1,
+            description="Stride:",
+            continuous_update=False,
+            disabled=True,
+        )
+        self.stride.observe(self._on_stride_change, names="value")
+        self.indices_text = ipw.Text(
+            value="",
+            placeholder="e.g. 0,10,20 or 0:100:10",
+            description="Indices:",
+            layout={"width": "300px"},
+            disabled=True,
+        )
+        self.indices_text.observe(self._on_indices_change, names="value")
         self.frame_count = ipw.HTML()
         self.status = Status()
 
         super().__init__(
             [
-                ipw.HTML("<h3>Select an AiiDA Group</h3>"),
-                ipw.HBox([self.group_selector, self.refresh_button]),
+                ipw.HTML("<h3>Use a stored structure or trajectory</h3>"),
+                self.node_type_selector,
+                self.database_query,
+                ipw.HBox([self.stride, self.indices_text]),
                 self.frame_count,
                 self.status,
             ]
         )
 
-    def _refresh_groups(self, _):
-        query = QueryBuilder()
-        query.append(Group, project=["label", "id"])
-        query.append(StructureData, with_group=Group)
-        options = []
-        seen = set()
-        for group_label, _ in query.all():
-            if group_label not in seen:
-                options.append((group_label, group_label))
-                seen.add(group_label)
-        self.group_selector.options = options
+    def _on_node_type_change(self, change):
+        query_types = {
+            "both": (StructureData, TrajectoryData),
+            "structure": (StructureData,),
+            "trajectory": (TrajectoryData,),
+        }
+        self.database_query.results.value = False
+        self.database_query.query_type = query_types[change["new"]]
+        self.database_query.search()
+        self._clear_selected_input()
 
-    def _on_group_change(self, change):
-        if not change["new"]:
+    def _on_node_change(self, change):
+        node = change["new"]
+        if node is None:
             return
         try:
-            group = orm.Group.get(label=change["new"])
-            structures = {
-                f"struct_{node.pk}": node for node in group.nodes if isinstance(node, StructureData)
-            }
-            self.model.structures = structures
-            self.frame_count.value = (
-                f"Loaded {len(structures)} structures from group '{change['new']}'."
-            )
+            if isinstance(node, StructureData):
+                self.model.structure = node
+                self.model.trajectory = None
+                self.model.selected_indices = None
+                self.model.structures = {}
+                self._set_trajectory_controls_enabled(False)
+                self.frame_count.value = "Selected frames: 1"
+                self.status.value = f"Selected stored structure PK {node.pk}."
+            elif isinstance(node, TrajectoryData):
+                validate_trajectory_size(node)
+                self.model.structure = None
+                self.model.trajectory = node
+                self._set_trajectory_controls_enabled(True)
+                self._update_indices()
+                self.status.value = f"Selected stored trajectory PK {node.pk}."
+            else:
+                self.status.value = (
+                    "<span style='color: red'>Selected node is not a structure or trajectory.</span>"
+                )
         except Exception as exc:  # noqa: BLE001
             self.status.value = f"<span style='color: red'>Error: {exc}</span>"
+            self.model.structure = None
+            self.model.trajectory = None
+            self.model.selected_indices = None
+            self.model.structures = {}
 
-    def reset(self):
-        self.group_selector.options = []
+    def _set_trajectory_controls_enabled(self, enabled: bool):
+        self.stride.disabled = not enabled
+        self.indices_text.disabled = not enabled
+
+    def _clear_selected_input(self):
+        self._set_trajectory_controls_enabled(False)
         self.frame_count.value = ""
         self.status.value = ""
+        self.model.structure = None
+        self.model.trajectory = None
+        self.model.selected_indices = None
         self.model.structures = {}
+
+    def _on_stride_change(self, _):
+        if self.model.trajectory is None:
+            return
+        self.indices_text.value = ""
+        self._update_indices()
+
+    def _on_indices_change(self, change):
+        if change["new"].strip():
+            self._update_indices_from_text(change["new"])
+
+    def _update_indices(self):
+        trajectory = self.model.trajectory
+        if trajectory is None:
+            self.frame_count.value = "Selected frames: 0"
+            return
+        if not isinstance(trajectory, TrajectoryData):
+            self.status.value = (
+                "<span style='color: red'>Error: selected object is not a trajectory.</span>"
+            )
+            return
+        step_ids = list(trajectory.get_stepids())
+        if not step_ids:
+            step_ids = list(range(len(trajectory.get_array("positions"))))
+        indices = build_step_indices(len(step_ids), self.stride.value)
+        self.model.selected_indices = [step_ids[i] for i in indices]
+        self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
+        self._split_trajectory()
+
+    def _update_indices_from_text(self, text: str):
+        if self.model.trajectory is None:
+            return
+        try:
+            self.model.selected_indices = _parse_indices(text)
+            self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
+            self._split_trajectory()
+        except Exception as exc:  # noqa: BLE001
+            self.status.value = f"<span style='color: red'>Invalid indices: {exc}</span>"
+
+    def _split_trajectory(self):
+        from aiida_feff.utils import split_trajectory
+
+        if self.model.trajectory is None or not self.model.selected_indices:
+            self.model.structures = {}
+            return
+        params = orm.Dict(dict={"step_ids": self.model.selected_indices})
+        self.model.structures = dict(split_trajectory(self.model.trajectory, params))
+
+    def reset(self):
+        self.database_query.results.value = False
+        self.node_type_selector.value = "both"
+        self.stride.unobserve(self._on_stride_change, names="value")
+        self.stride.value = 1
+        self.stride.observe(self._on_stride_change, names="value")
+        self.indices_text.value = ""
+        self._set_trajectory_controls_enabled(False)
+        self._clear_selected_input()
 
 
 class InputWidget(ipw.VBox):
@@ -326,20 +430,20 @@ class InputWidget(ipw.VBox):
         self.structure_widget = StructureInputWidget(model)
         self.trajectory_widget = TrajectoryInputWidget(model)
         self.file_list_widget = FileListInputWidget(model)
-        self.group_widget = GroupInputWidget(model)
+        self.database_widget = DatabaseInputWidget(model)
 
         self.tabs = ipw.Tab(
             children=[
                 self.structure_widget,
                 self.trajectory_widget,
                 self.file_list_widget,
-                self.group_widget,
+                self.database_widget,
             ]
         )
         self.tabs.set_title(0, "Single structure")
         self.tabs.set_title(1, "MD trajectory")
         self.tabs.set_title(2, "File list")
-        self.tabs.set_title(3, "AiiDA Group")
+        self.tabs.set_title(3, "AiiDA database")
         self.tabs.observe(self._on_tab_change, names="selected_index")
 
         self.absorber_selector = AbsorberSelectorWidget(model)
@@ -368,7 +472,12 @@ class InputWidget(ipw.VBox):
             self.frame_count.value = ""
 
     def _on_tab_change(self, change):
-        source_map = {0: "none", 1: "trajectory", 2: "file_list", 3: "group"}
+        source_map = {
+            0: "none",
+            1: "trajectory",
+            2: "file_list",
+            3: "database",
+        }
         self.model.ensemble_source = source_map.get(change["new"], "none")
         self._clear_non_active_source(change["new"])
 
@@ -378,7 +487,7 @@ class InputWidget(ipw.VBox):
             self.structure_widget,
             self.trajectory_widget,
             self.file_list_widget,
-            self.group_widget,
+            self.database_widget,
         ]
         for i, widget in enumerate(widgets):
             if i != active_index:
@@ -388,7 +497,7 @@ class InputWidget(ipw.VBox):
         self.structure_widget.reset()
         self.trajectory_widget.reset()
         self.file_list_widget.reset()
-        self.group_widget.reset()
+        self.database_widget.reset()
         self.absorber_selector.reset()
         self.model.reset()
         self.tabs.selected_index = 0
