@@ -122,8 +122,20 @@ def main():
     print(f"Configured profile '{profile_name}' at {config_path}")
 
     # 3. Start the container
+    #
+    # ``--restart`` is required: switching between default and dev mode
+    # changes the profile's extra_mounts, and a running container cannot
+    # gain new mounts. With --restart, aiidalab-launch stops + recreates
+    # the container when the configuration changed (home volume persists).
+    # Without it, the old container keeps running and the /tmp/src/* mounts
+    # are missing, so the editable installs below fail.
+    # ``--no-browser`` keeps this script non-interactive; URLs are printed
+    # at the end instead.
     print(f"\n=== Starting AiiDAlab instance '{profile_name}' ===")
-    subprocess.run(["aiidalab-launch", "start", "-p", profile_name], check=True)
+    subprocess.run(
+        ["aiidalab-launch", "start", "-p", profile_name, "--restart", "--no-browser"],
+        check=True,
+    )
 
     # The base image ships its own RabbitMQ + PostgreSQL (in the
     # "aiida-core-services" conda env), already running inside the container at
