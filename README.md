@@ -1,17 +1,22 @@
-# AiiDAlab FEFF
+# AiiDAlab EXAFS
 
-AiiDAlab app for FEFF-based EXAFS and MD-EXAFS calculations.
+[![Release](https://img.shields.io/github/v/release/stfc/aiidalab-exafs)](https://github.com/stfc/aiidalab-exafs/releases)
+[![Pipeline Status](https://github.com/stfc/aiidalab-exafs/actions/workflows/ci-testing.yml/badge.svg?branch=main)](https://github.com/stfc/aiidalab-exafs/actions)
+
+An AiiDAlab application plugin for FEFF-based EXAFS and MD-EXAFS scientific workflows, maintained by the [Ada Lovelace Centre](https://adalovelacecentre.ac.uk/) (ALC).
+
+The app is in active early development.
 
 ## Usage
 
-Launch the app from AiiDAlab or run the notebook:
+Launch the app within AiiDAlab or run the main interface in a Jupyter environment:
 
 ```python
 from aiidalab_feff.main import main
 main()
 ```
 
-## Experimental references
+### Experimental references
 
 The **Spectrum** results tab accepts experimental files supported by Larch,
 including plain text/CSV, XDI, and Athena project files. Uploaded files are
@@ -26,23 +31,82 @@ against the experimental reference in χ(k) and χ(R). **Save scaled
 simulation** stores the current adjusted FEFF spectrum as a provenance-linked
 `XasData` node; it never modifies the original calculation output.
 
-## Development
+## Container Workflows
 
-Install in editable mode:
+Container tooling is provided in the `containers/` directory for both development and deployment based on `ghcr.io/stfc/alc-ux/base:py310`.
+
+### Live Development (aiidalab-launch)
+
+To run the app in live development mode with local checkouts bind-mounted into an AiiDAlab container:
 
 ```bash
-pip install -e ".[testing]"
+pipx install aiidalab-launch
+python3 containers/launch.py
 ```
 
-Run linting:
+This starts an AiiDAlab container, bind-mounts local package checkouts, installs them in editable mode, configures AiiDA, and provides local JupyterLab and App URLs.
+
+### Deployment Image
+
+To build and run a self-contained deployment image with the app and dependencies baked in:
+
+```bash
+# Build the image (tags aiidalab-feff:latest)
+./containers/build.sh
+
+# Start the container with data persistence
+./containers/startup.sh
+```
+
+`startup.sh` supports both Docker and Apptainer engines and maps Jupyter (port 8888) and the AiiDA REST API (port 5050).
+
+## For Developers
+
+### Installation
+
+Install the package in editable mode with development dependencies:
+
+```bash
+pip install -e ".[testing,pre-commit]"
+```
+
+### Style & Linting
+
+Pre-commit hooks are configured using [Ruff](https://docs.astral.sh/ruff/) and [Mypy](https://mypy-lang.org/):
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+To run linting and formatting manually:
 
 ```bash
 ruff check aiidalab_feff/ tests/
 ruff format aiidalab_feff/ tests/
 ```
 
-Run tests:
+### Testing
+
+Run unit tests using [pytest](https://docs.pytest.org/):
 
 ```bash
 pytest
 ```
+
+## License
+
+[BSD 3-Clause License](LICENSE)
+
+## Funding
+
+Contributors to this project were funded by
+
+<div align="center">
+    <a href="https://adalovelacecentre.ac.uk/">
+        <img src="images/alc.svg" alt="ALC Logo" style="width: 30%">
+    </a>
+</div>
+
+
+
