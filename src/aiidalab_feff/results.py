@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import csv
 from io import StringIO
+from typing import TypeGuard
 
 import ipywidgets as ipw
 import numpy as np
 from aiida import orm
+from aiida_feff.calcfunctions.experimental import scale_simulated_spectrum, scaled_chi_arrays
 from aiida_feff.data.xasdata import XasData
 from alc_aiidalab_widgets.widgets.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_feff.models import ResultsModel
+from aiidalab_feff.experimental import ExperimentalSpectrumWidget
 from aiidalab_feff.widgets.paths_explorer import PathContributionsExplorer
 
 
@@ -135,6 +138,32 @@ class ResultsWidget(ipw.VBox):
             indent=False,
             layout={"width": "130px"},
         )
+        self.show_experimental = ipw.Checkbox(
+            value=True,
+            description="Show experimental",
+            indent=False,
+            layout={"width": "160px"},
+        )
+        self.comparison_s02 = ipw.BoundedFloatText(
+            value=1.0,
+            min=0.0,
+            max=2.0,
+            step=0.01,
+            description="S₀²:",
+            layout={"width": "130px"},
+        )
+        self.comparison_e0 = ipw.FloatText(
+            value=0.0,
+            step=0.1,
+            description="ΔE₀ (eV):",
+            layout={"width": "150px"},
+        )
+        self.save_scaled_spectrum = ipw.Button(
+            description="Save scaled simulation",
+            icon="save",
+            disabled=True,
+        )
+        self.save_scaled_spectrum.on_click(self._on_save_scaled_spectrum)
 
         # Convergence-tab k-weight (independent from chi(k)/chi(R) tabs).
         self.conv_kweight = ipw.Dropdown(
@@ -176,12 +205,18 @@ class ResultsWidget(ipw.VBox):
         self.ft_dk.observe(self._on_ft_change, names="value")
         self.ft_rmax.observe(self._on_ft_change, names="value")
         self.show_legends.observe(self._on_legend_change, names="value")
+        self.show_experimental.observe(self._on_comparison_change, names="value")
+        self.comparison_s02.observe(self._on_comparison_change, names="value")
+        self.comparison_e0.observe(self._on_comparison_change, names="value")
         self.conv_kweight.observe(self._on_conv_change, names="value")
         self.conv_sites.observe(self._on_conv_change, names="value")
         self.conv_frames.observe(self._on_conv_change, names="value")
 
         self.convergence_tab = ipw.VBox([self.conv_box, self._fig_conv.canvas])
         self.paths_tab = ipw.VBox()
+        self.experimental_widget = ExperimentalSpectrumWidget(results_model)
+        self.experimental_reference = ipw.Accordion([self.experimental_widget], selected_index=None)
+        self.experimental_reference.set_title(0, "Experimental reference")
         self.export_spectrum = ipw.Dropdown(description="Spectrum:", options=[])
         self.export_spectrum.observe(self._on_spectrum_change, names="value")
         self.chi_k_preview = ipw.HTML("<em>No spectrum data available.</em>")
@@ -241,6 +276,10 @@ class ResultsWidget(ipw.VBox):
                 self.ft_dk,
                 self.ft_rmax,
                 self.show_legends,
+                self.show_experimental,
+                self.comparison_s02,
+                self.comparison_e0,
+                self.save_scaled_spectrum,
             ],
             layout={"margin": "0 0 8px 0", "flex_flow": "row wrap"},
         )
@@ -263,6 +302,7 @@ class ResultsWidget(ipw.VBox):
         self.spectrum_tab = ipw.VBox(
             [
                 ipw.HTML("<h2>Spectrum</h2>"),
+                self.experimental_reference,
                 self.spectrum_controls,
                 ipw.HBox(
                     [self.chi_k_panel, self.chi_r_panel],
@@ -298,6 +338,7 @@ class ResultsWidget(ipw.VBox):
 
         self.results_model.observe(self._on_results_change, names="averaged_xas")
         self.results_model.observe(self._on_results_change, names="path_contributions")
+        self.results_model.observe(self._on_results_change, names="experimental_xas")
 
         self._render()
 
@@ -325,6 +366,31 @@ class ResultsWidget(ipw.VBox):
         self._render_chi_k()
         self._render_chi_r()
         self._render_convergence()
+
+    def _on_comparison_change(self, _):
+        """Refresh the live experimental/simulated comparison."""
+        self._render_chi_k()
+        self._render_chi_r()
+
+    def _on_save_scaled_spectrum(self, _):
+        """Store the active comparison scaling as a provenance-linked node."""
+        simulated = self._selected_export_spectrum()
+        if simulated is None:
+            return
+        try:
+            scaled = scale_simulated_spectrum(
+                simulated,
+                orm.Dict(
+                    dict={
+                        "s02": float(self.comparison_s02.value),
+                        "e0_shift": float(self.comparison_e0.value),
+                    }
+                ),
+            )
+            scaled.label = f"Scaled FEFF spectrum from PK {simulated.pk}"
+            self.status.value = f"Stored scaled simulated spectrum PK {scaled.pk}."
+        except Exception as exc:  # noqa: BLE001
+            self.status.value = f"<span style='color: red'>Could not save scaling: {exc}</span>"
 
     def _on_spectrum_change(self, _):
         """Redraw charts and raw-data previews for the selected spectrum."""
@@ -359,6 +425,7 @@ class ResultsWidget(ipw.VBox):
             self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"
             self.download_chi_k.disabled = True
             self.download_chi_r.disabled = True
+            self.save_scaled_spectrum.disabled = True
             return
 
         node = self.results_model.process_node
@@ -374,6 +441,7 @@ class ResultsWidget(ipw.VBox):
         self._populate_conv_selectors()
 
         self._populate_export_spectra()
+        self.save_scaled_spectrum.disabled = self._selected_export_spectrum() is None
         self._render_chi_k()
         self._render_chi_r()
         self._render_convergence()
@@ -441,14 +509,26 @@ class ResultsWidget(ipw.VBox):
 
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        k, chi_k = scaled_chi_arrays(
+            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
+        )
         n = int(self.kweight.value)
         weighted = chi_k * (k ** n) if n else chi_k
 
         label = self._kweight_label(n)
-        ax.plot(k, weighted, label=label)
-        if "chi_k_std" in xas.get_arraynames() and n:
+        ax.plot(k, weighted, label="Simulated")
+        if "chi_k_std" in xas.get_arraynames() and n and self.comparison_e0.value == 0:
             std = np.asarray(xas.get_array("chi_k_std"), dtype=float) * (k ** n)
-            ax.fill_between(k, weighted - std, weighted + std, alpha=0.3, label="±1σ")
+            ax.fill_between(
+                k, weighted - self.comparison_s02.value * std,
+                weighted + self.comparison_s02.value * std, alpha=0.3, label="±1σ"
+            )
+        experimental = self.results_model.experimental_xas
+        if self.show_experimental.value and _has_chi_data(experimental):
+            exp_k = np.asarray(experimental.get_array("k"), dtype=float)
+            exp_chi = np.asarray(experimental.get_array("chi_k"), dtype=float)
+            exp_weighted = exp_chi * (exp_k ** n) if n else exp_chi
+            ax.plot(exp_k, exp_weighted, color="C3", ls="--", label="Experimental")
         ax.set_xlabel("k (Å⁻¹)")
         ax.set_ylabel(label)
         if self.show_legends.value:
@@ -466,6 +546,9 @@ class ResultsWidget(ipw.VBox):
 
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        k, chi_k = scaled_chi_arrays(
+            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
+        )
         kweight = int(self.kweight.value)
         kmin = float(self.ft_kmin.value)
         kmax = float(self.ft_kmax.value)
@@ -481,7 +564,17 @@ class ResultsWidget(ipw.VBox):
             return
 
         kw_lbl = self._kweight_label(kweight)
-        ax.plot(r, chir_mag, label=f"|χ(R)|  ({kw_lbl}, k={kmin:g}–{kmax:g} Å⁻¹)")
+        ax.plot(r, chir_mag, label="Simulated")
+        experimental = self.results_model.experimental_xas
+        if self.show_experimental.value and _has_chi_data(experimental):
+            try:
+                exp_r, exp_chir_mag = self._chi_r_arrays(experimental, apply_comparison=False)
+            except Exception as exc:  # noqa: BLE001
+                self.status.value = (
+                    f"<span style='color: orange'>Experimental FT unavailable: {exc}</span>"
+                )
+            else:
+                ax.plot(exp_r, exp_chir_mag, color="C3", ls="--", label="Experimental")
         ax.set_xlabel("R (Å)")
         ax.set_ylabel("|χ(R)|")
         if self.show_legends.value:
@@ -638,6 +731,9 @@ class ResultsWidget(ipw.VBox):
             return
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        k, chi_k = scaled_chi_arrays(
+            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
+        )
         kweight = int(self.kweight.value)
         weighted = chi_k * (k ** kweight) if kweight else chi_k
         rows = _format_preview_rows(
@@ -705,6 +801,9 @@ class ResultsWidget(ipw.VBox):
             return ""
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        k, chi_k = scaled_chi_arrays(
+            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
+        )
         kweight = int(self.kweight.value)
         weighted = chi_k * (k ** kweight) if kweight else chi_k
         output = StringIO()
@@ -714,16 +813,24 @@ class ResultsWidget(ipw.VBox):
             **self._common_export_metadata(),
             spectrum=self.export_spectrum.value,
             kweight=kweight,
+            s02=float(self.comparison_s02.value),
+            e0_shift=float(self.comparison_e0.value),
         )
         writer.writerow(["k_angstrom_inverse", "chi_k", f"chi_k_times_k_to_{kweight}"])
         writer.writerows(zip(k, chi_k, weighted, strict=True))
         return output.getvalue()
 
-    def _chi_r_arrays(self, xas: XasData):
+    def _chi_r_arrays(self, xas: XasData, apply_comparison: bool = True):
         """Calculate |χ(R)| using the active χ(R) control values."""
+        k = np.asarray(xas.get_array("k"), dtype=float)
+        chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        if apply_comparison:
+            k, chi_k = scaled_chi_arrays(
+                k, chi_k, self.comparison_s02.value, self.comparison_e0.value
+            )
         return _ft_larch(
-            np.asarray(xas.get_array("k"), dtype=float),
-            np.asarray(xas.get_array("chi_k"), dtype=float),
+            k,
+            chi_k,
             float(self.ft_kmin.value),
             float(self.ft_kmax.value),
             int(self.kweight.value),
@@ -748,6 +855,8 @@ class ResultsWidget(ipw.VBox):
             kmax=float(self.ft_kmax.value),
             dk=float(self.ft_dk.value),
             rmax=float(self.ft_rmax.value),
+            s02=float(self.comparison_s02.value),
+            e0_shift=float(self.comparison_e0.value),
         )
         writer.writerow(["r_angstrom", "chi_r_magnitude"])
         writer.writerows(zip(r, chir_mag, strict=True))
@@ -776,7 +885,9 @@ class ResultsWidget(ipw.VBox):
         self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"
         self.download_chi_k.disabled = True
         self.download_chi_r.disabled = True
+        self.save_scaled_spectrum.disabled = True
         self.conv_box.layout.display = "none"
+        self.experimental_widget.reset()
         # Clear sub-sampling selectors.
         self.conv_sites.options = []
         self.conv_frames.options = []
@@ -791,6 +902,11 @@ def _format_preview_rows(rows) -> str:
         "<tr>" + "".join(f"<td>{value:.7g}</td>" for value in row) + "</tr>"
         for row in rows
     )
+
+
+def _has_chi_data(xas: object | None) -> TypeGuard[XasData]:
+    """Return whether an experimental reference can be drawn in k/R space."""
+    return isinstance(xas, XasData) and {"k", "chi_k"}.issubset(xas.get_arraynames())
 
 
 def _format_preview_table(headers: list[str], rows: str) -> str:
