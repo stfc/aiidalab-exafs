@@ -80,6 +80,8 @@ class AbsorberSelectorWidget(ipw.VBox):
 
         self.model.observe(self._on_structure_change, names="structure")
         self.model.observe(self._on_structures_change, names="structures")
+        self.model.observe(self._on_trajectory_change, names="trajectory")
+        self.model.observe(self._on_trajectory_change, names="selected_indices")
         self._reference = None
         self._silence_site_update = False
 
@@ -90,6 +92,10 @@ class AbsorberSelectorWidget(ipw.VBox):
         structures = self.model.get_structures()
         if structures:
             return next(iter(structures.values()))  # type: ignore[return-value]
+        if self.model.trajectory is not None and self.model.selected_indices:
+            step_id = self.model.selected_indices[0]
+            frame_index = self.model.trajectory.get_index_from_stepid(step_id)
+            return self.model.trajectory.get_step_structure(frame_index)
         return None
 
     def _on_structure_change(self, change):
@@ -103,6 +109,12 @@ class AbsorberSelectorWidget(ipw.VBox):
                 self._refresh(ref)
             else:
                 self._clear()
+
+    def _on_trajectory_change(self, _):
+        if self.model.structure is None:
+            ref = self._reference_structure()
+            if ref is not None:
+                self._refresh(ref)
 
     def _refresh(self, structure: StructureData):
         self._reference = structure

@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 
 import ase
+import numpy as np
 from aiida.orm import StructureData, TrajectoryData
 from ase.io import read as ase_read
 
@@ -36,7 +37,7 @@ def read_cif_xyz_to_structure_data(file_content: bytes, filename: str) -> Struct
     StructureData
     """
     text = file_content.decode("utf-8", errors="ignore")
-    fmt = Path(filename).suffix.lstrip(".").lower()
+    fmt = _guess_ase_format(file_content, filename)
     try:
         # Try reading with the format first, or fall back to auto-detection
         atoms = ase_read(StringIO(text), format=fmt)
@@ -56,7 +57,7 @@ def read_cif_xyz_to_structure_data(file_content: bytes, filename: str) -> Struct
 def read_xyz_to_trajectory_data(file_content: bytes, filename: str) -> TrajectoryData:
     """Read a multi-frame file and return an AiiDA TrajectoryData node."""
     text = file_content.decode("utf-8", errors="ignore")
-    fmt = Path(filename).suffix.lstrip(".").lower()
+    fmt = _guess_ase_format(file_content, filename)
     try:
         atoms_list = ase_read(StringIO(text), index=":", format=fmt)
     except Exception:
@@ -70,11 +71,7 @@ def read_xyz_to_trajectory_data(file_content: bytes, filename: str) -> Trajector
         msg = f"File {filename} did not contain multiple frames."
         raise ValueError(msg)
 
-    structures = [
-        ase_atoms_to_structure_data(atoms, label=f"{Path(filename).stem}_frame_{i:04d}")
-        for i, atoms in enumerate(atoms_list)
-    ]
-    trajectory = TrajectoryData(structurelist=structures)
+    trajectory = ase_atoms_list_to_trajectory_data(atoms_list)
     trajectory.label = Path(filename).stem
     return trajectory
 
@@ -108,6 +105,44 @@ def read_file_list_to_structures(
 def _sanitise_key(stem: str) -> str:
     """Sanitise a filename stem to be a valid dictionary key."""
     return "".join(c if c.isalnum() or c in "_-" else "_" for c in stem).rstrip("_")
+
+
+def _guess_ase_format(file_content: bytes, filename: str) -> str:
+    """Return an ASE format, including header-based LAMMPS dump detection."""
+    if b"ITEM: TIMESTEP" in file_content[:4096]:
+        return "lammps-dump-text"
+    return Path(filename).suffix.lstrip(".").lower()
+
+
+def ase_atoms_list_to_trajectory_data(atoms_list: list[ase.Atoms]) -> TrajectoryData:
+    """Convert equally shaped ASE frames to a TrajectoryData without intermediate nodes."""
+    symbols = atoms_list[0].get_chemical_symbols()
+    pbc = (
+        bool(atoms_list[0].pbc[0]),
+        bool(atoms_list[0].pbc[1]),
+        bool(atoms_list[0].pbc[2]),
+    )
+    for atoms in atoms_list[1:]:
+        if atoms.get_chemical_symbols() != symbols:
+            msg = "All trajectory frames must contain the same atoms in the same order."
+            raise ValueError(msg)
+        if tuple(bool(value) for value in atoms.pbc) != pbc:
+            msg = "All trajectory frames must use the same periodic boundary conditions."
+            raise ValueError(msg)
+
+    trajectory = TrajectoryData()
+    trajectory_kwargs = {
+        "symbols": symbols,
+        "positions": np.asarray([atoms.positions for atoms in atoms_list]),
+        "cells": np.asarray([atoms.cell.array for atoms in atoms_list]),
+    }
+    try:
+        trajectory.set_trajectory(**trajectory_kwargs, pbc=pbc)
+    except TypeError as exc:
+        if "unexpected keyword argument 'pbc'" not in str(exc):
+            raise
+        trajectory.set_trajectory(**trajectory_kwargs)
+    return trajectory
 
 
 def build_step_indices(n_frames: int, stride: int) -> list[int]:

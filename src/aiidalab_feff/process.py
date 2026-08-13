@@ -23,8 +23,11 @@ def build_workchain_builder(
         If required input is missing or inconsistent.
     """
     structures = input_model.get_structures()
-    if not structures:
+    if input_model.trajectory is None and not structures:
         msg = "No structures provided."
+        raise ValueError(msg)
+    if input_model.trajectory is not None and not input_model.selected_indices:
+        msg = "No trajectory frames selected."
         raise ValueError(msg)
 
     parameters = workflow_model.parameters
@@ -47,8 +50,13 @@ def build_workchain_builder(
         raise ValueError(msg)
 
     builder = EnsembleExafsWorkChain.get_builder()
-    for label, structure in structures.items():
-        builder.structures[label] = structure  # type: ignore[index]
+    if input_model.trajectory is not None:
+        builder.trajectory = input_model.trajectory
+        builder.step_ids = orm.List(list=input_model.selected_indices)
+    else:
+        assert structures is not None
+        for label, structure in structures.items():
+            builder.structures[label] = structure  # type: ignore[index]
     builder.parameters = parameters
     builder.code = code
 
@@ -58,6 +66,8 @@ def build_workchain_builder(
             options["max_wallclock_seconds"] = workflow_model.walltime_seconds
         if workflow_model.num_nodes is not None:
             options["resources"] = {"num_machines": workflow_model.num_nodes}
+            if workflow_model.is_batch() and workflow_model.n_workers is not None:
+                options["resources"]["num_mpiprocs_per_machine"] = workflow_model.n_workers
     if options:
         builder.options = orm.Dict(dict=options)
 
@@ -283,8 +293,14 @@ class ProcessWidget(ipw.VBox):
             edge = str(params.get("edge", "")).upper()
             atoms = params.get("absorbing_atoms", None) or []
             # Resolve element symbol(s) from the first input structure.
-            structures = process_node.inputs.structures
-            first_struct = next(iter(structures.values()))
+            if "trajectory" in process_node.inputs:
+                trajectory = process_node.inputs.trajectory
+                step_id = process_node.inputs.step_ids.get_list()[0]
+                frame_index = trajectory.get_index_from_stepid(step_id)
+                first_struct = trajectory.get_step_structure(frame_index)
+            else:
+                structures = process_node.inputs.structures
+                first_struct = next(iter(structures.values()))
             from aiidalab_feff.utils import get_symbols
 
             symbols = get_symbols(first_struct)
@@ -306,7 +322,11 @@ class ProcessWidget(ipw.VBox):
         self.results_model.xas_grid = xas_grid or None
         self.results_model.edge = edge
         self.results_model.absorber_label = absorber_label
-        self.results_model.is_ensemble = len(self.input_model.get_structures() or {}) > 1
+        self.results_model.is_ensemble = (
+            len(self.input_model.selected_indices or []) > 1
+            if self.input_model.trajectory is not None
+            else len(self.input_model.get_structures() or {}) > 1
+        )
         self.results_model.process_node = process_node
         self.results_model.n_failed = outputs.n_failed.value
         if hasattr(outputs, "path_contributions"):

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from aiidalab_feff.input import _parse_indices
+from aiidalab_feff.common.file_handling import _guess_ase_format
+from aiidalab_feff.input import _parse_indices, _upload_error_message
 from aiidalab_feff.models import InputModel, WorkflowModel
 
 
@@ -38,3 +39,24 @@ def test_parse_indices():
     assert _parse_indices("0,5,10") == [0, 5, 10]
     assert _parse_indices("0:6:2") == [0, 2, 4]
     assert _parse_indices("") == []
+
+
+def test_upload_error_message_is_actionable_and_escapes_details():
+    """Upload failures show a visible alert without rendering file data as HTML."""
+    message = _upload_error_message("<bad>.cif", "structure", ValueError("<invalid>"))
+
+    assert "role='alert'" in message
+    assert "Could not load &lt;bad&gt;.cif." in message
+    assert "valid structure file" in message
+    assert "Show technical details" in message
+    assert "&lt;invalid&gt;" in message
+
+
+def test_lammps_dump_header_selects_ase_text_reader():
+    """LAMMPS dump files do not have a reliably distinguishable suffix."""
+    dump_header = b"ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n1\n"
+
+    assert _guess_ase_format(dump_header, "npt_traj.dump") == "lammps-dump-text"
+
+
+

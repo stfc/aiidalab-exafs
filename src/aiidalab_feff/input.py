@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from html import escape
+from typing import cast
+
 import ipywidgets as ipw
-from aiida import orm
 from aiida.orm import StructureData, TrajectoryData
 from alc_aiidalab_widgets.widgets.database import AiiDADatabaseQueryWidget
 from alc_aiidalab_widgets.widgets.status import Status
@@ -57,14 +59,14 @@ class StructureInputWidget(ipw.VBox):
         try:
             structure = read_cif_xyz_to_structure_data(content, filename)
             self.model.structure = structure
-            self.status.value = f"Loaded {filename} ({len(structure.sites)} atoms)."
+            self.status.success(f"Loaded {filename} ({len(structure.sites)} atoms).")
         except Exception as exc:  # noqa: BLE001
-            self.status.value = f"<span style='color: red'>Error: {exc}</span>"
+            self.status.value = _upload_error_message(filename, "structure", exc)
             self.model.structure = None
 
     def reset(self):
         self.file_upload.value = () if isinstance(self.file_upload.value, tuple) else {}
-        self.status.value = ""
+        self.status.clear()
         self.model.structure = None
 
 
@@ -133,9 +135,9 @@ class TrajectoryInputWidget(ipw.VBox):
             validate_trajectory_size(trajectory)
             self.model.trajectory = trajectory
             self._update_indices()
-            self.status.value = f"Loaded {filename} with {len(trajectory.get_stepids())} frames."
+            self.status.success(f"Loaded {filename} with {len(trajectory.get_stepids())} frames.")
         except Exception as exc:  # noqa: BLE001
-            self.status.value = f"<span style='color: red'>Error: {exc}</span>"
+            self.status.value = _upload_error_message(filename, "trajectory", exc)
             self.model.trajectory = None
             self.model.selected_indices = None
             self.model.structures = {}
@@ -153,19 +155,21 @@ class TrajectoryInputWidget(ipw.VBox):
         trajectory = self.model.trajectory
         if trajectory is None:
             self.frame_count.value = "Selected frames: 0"
-            return
+            return False
         if not isinstance(trajectory, TrajectoryData):
             self.status.value = (
                 "<span style='color: red'>Error: uploaded object is not a trajectory.</span>"
             )
-            return
+            return False
         step_ids = list(trajectory.get_stepids())
         if not step_ids:
             step_ids = list(range(len(trajectory.get_array("positions"))))
+        self.stride.max = max(100, len(step_ids))
         indices = build_step_indices(len(step_ids), self.stride.value)
         self.model.selected_indices = [step_ids[i] for i in indices]
+        self.model.structures = {}
         self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
-        self._split_trajectory()
+        return True
 
     def _update_indices_from_text(self, text: str):
         if self.model.trajectory is None:
@@ -173,25 +177,16 @@ class TrajectoryInputWidget(ipw.VBox):
         try:
             indices = _parse_indices(text)
             self.model.selected_indices = indices
+            self.model.structures = {}
             self.frame_count.value = f"Selected frames: {len(indices)}"
-            self._split_trajectory()
         except Exception as exc:  # noqa: BLE001
             self.status.value = f"<span style='color: red'>Invalid indices: {exc}</span>"
-
-    def _split_trajectory(self):
-        from aiida_feff.utils import split_trajectory
-
-        if self.model.trajectory is None or not self.model.selected_indices:
-            self.model.structures = {}
-            return
-        params = orm.Dict(dict={"step_ids": self.model.selected_indices})
-        self.model.structures = dict(split_trajectory(self.model.trajectory, params))
 
     def reset(self):
         self.file_upload.value = () if isinstance(self.file_upload.value, tuple) else {}
         self.indices_text.value = ""
         self.frame_count.value = ""
-        self.status.value = ""
+        self.status.clear()
         # Avoid triggering _update_indices while the model is being cleared by
         # other widgets; reset will be followed by a model reset if needed.
         self.stride.unobserve(self._on_stride_change, names="value")
@@ -241,15 +236,15 @@ class FileListInputWidget(ipw.VBox):
             structures = read_file_list_to_structures(files)
             self.model.structures = structures
             self.frame_count.value = f"Loaded {len(structures)} structures."
-            self.status.value = ""
+            self.status.success(f"Loaded {len(structures)} structures.")
         except Exception as exc:  # noqa: BLE001
-            self.status.value = f"<span style='color: red'>Error: {exc}</span>"
+            self.status.value = _upload_error_message("selected files", "structure", exc)
             self.model.structures = {}
 
     def reset(self):
         self.file_upload.value = () if isinstance(self.file_upload.value, tuple) else {}
         self.frame_count.value = ""
-        self.status.value = ""
+        self.status.clear()
         self.model.structures = {}
 
 
@@ -338,7 +333,7 @@ class DatabaseInputWidget(ipw.VBox):
                 self.model.trajectory = node
                 self._set_trajectory_controls_enabled(True)
                 self._update_indices()
-                self.status.value = f"Selected stored trajectory PK {node.pk}."
+                self.status.success(f"Selected stored trajectory PK {node.pk}.")
             else:
                 self.status.value = (
                     "<span style='color: red'>Selected node is not a structure or trajectory.</span>"
@@ -377,38 +372,32 @@ class DatabaseInputWidget(ipw.VBox):
         trajectory = self.model.trajectory
         if trajectory is None:
             self.frame_count.value = "Selected frames: 0"
-            return
+            return False
         if not isinstance(trajectory, TrajectoryData):
             self.status.value = (
                 "<span style='color: red'>Error: selected object is not a trajectory.</span>"
             )
-            return
+            return False
         step_ids = list(trajectory.get_stepids())
         if not step_ids:
             step_ids = list(range(len(trajectory.get_array("positions"))))
+        self.stride.max = max(100, len(step_ids))
         indices = build_step_indices(len(step_ids), self.stride.value)
         self.model.selected_indices = [step_ids[i] for i in indices]
+        self.model.structures = {}
         self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
-        self._split_trajectory()
+        return True
 
     def _update_indices_from_text(self, text: str):
         if self.model.trajectory is None:
             return
         try:
-            self.model.selected_indices = _parse_indices(text)
+            indices = _parse_indices(text)
+            self.model.selected_indices = indices
+            self.model.structures = {}
             self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
-            self._split_trajectory()
         except Exception as exc:  # noqa: BLE001
             self.status.value = f"<span style='color: red'>Invalid indices: {exc}</span>"
-
-    def _split_trajectory(self):
-        from aiida_feff.utils import split_trajectory
-
-        if self.model.trajectory is None or not self.model.selected_indices:
-            self.model.structures = {}
-            return
-        params = orm.Dict(dict={"step_ids": self.model.selected_indices})
-        self.model.structures = dict(split_trajectory(self.model.trajectory, params))
 
     def reset(self):
         self.database_query.results.value = False
@@ -463,11 +452,16 @@ class InputWidget(ipw.VBox):
 
         self.model.observe(self._on_model_structures, names="structures")
         self.model.observe(self._on_model_structures, names="structure")
+        self.model.observe(self._on_model_structures, names="trajectory")
+        self.model.observe(self._on_model_structures, names="selected_indices")
 
     def _on_model_structures(self, change):
         structures = self.model.get_structures()
         if structures:
             self.frame_count.value = f"Total structures ready: {len(structures)}"
+        elif self.model.trajectory is not None and self.model.selected_indices is not None:
+            selected_indices = cast(list[int], self.model.selected_indices)
+            self.frame_count.value = f"Selected trajectory frames: {len(selected_indices)}"
         else:
             self.frame_count.value = ""
 
@@ -521,3 +515,19 @@ def _parse_indices(text: str) -> list[int]:
                 return list(range(start, stop, step))
             return list(range(start, 100000, step))
     return [int(x.strip()) for x in text.split(",") if x.strip()]
+
+
+def _upload_error_message(filename: str, file_kind: str, error: Exception) -> str:
+    """Build an accessible, actionable alert for a failed file upload."""
+    escaped_filename = escape(filename)
+    escaped_error = escape(str(error))
+    return (
+        "<div role='alert' style='margin: 8px 0; padding: 10px 12px; "
+        "border-left: 4px solid #d32f2f; background: #ffebee; color: #7f0000;'>"
+        f"<strong>Could not load {escaped_filename}.</strong><br>"
+        f"Check that it is a valid {file_kind} file, then try uploading it again."
+        "<details style='margin-top: 6px;'>"
+        "<summary>Show technical details</summary>"
+        f"<code style='white-space: pre-wrap;'>{escaped_error}</code>"
+        "</details></div>"
+    )

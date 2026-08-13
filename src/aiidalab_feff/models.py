@@ -6,6 +6,7 @@ from typing import Any
 
 from aiida.orm import Code, Computer, ProcessNode, StructureData, TrajectoryData
 from aiida_feff.data.pathcontributions import PathContributionsData
+from aiida_feff.data.xasdata import XasData
 from traitlets import Bool, Dict as TraitDict, Float, HasTraits, Instance, Int, List, Unicode
 
 
@@ -23,13 +24,13 @@ class InputModel(HasTraits):
 
     def is_single_structure(self) -> bool:
         """Return True if a single structure has been provided."""
-        return self.structure is not None or (
+        return self.structure is not None or (self.trajectory is not None and len(self.selected_indices or []) == 1) or (
             self.structures is not None and len(self.structures) == 1
         )
 
     def is_ensemble(self) -> bool:
         """Return True if an ensemble (or single structure) has been provided."""
-        return self.structure is not None or bool(self.structures)
+        return self.structure is not None or self.trajectory is not None or bool(self.structures)
 
     def get_structures(self) -> dict[str, Any] | None:
         """Return the unified structures dict, or None if not set."""
@@ -109,6 +110,8 @@ class ResultsModel(HasTraits):
     # Absorber / edge metadata for plot titles & legends, e.g. "Mn K-edge".
     edge = Unicode(default_value="")
     absorber_label = Unicode(default_value="")  # e.g. "Mn" or "Mn @ sites 0,2,4"
+    # An uploaded or database-selected reference spectrum for live comparison.
+    experimental_xas = Instance(XasData, allow_none=True)
     # Per-(frame, site) XasData grid for the convergence / sub-sampling view.
     # Stored as a Python dict keyed by (frame_idx:int, site_idx:int); built in
     # ProcessWidget._populate_results by walking the workchain's FeffCalculation
@@ -124,6 +127,7 @@ class ResultsModel(HasTraits):
         self.process_node = None
         self.edge = ""
         self.absorber_label = ""
+        self.experimental_xas = None
         self.xas_grid = None
 
     @property
