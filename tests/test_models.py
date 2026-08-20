@@ -59,4 +59,43 @@ def test_lammps_dump_header_selects_ase_text_reader():
     assert _guess_ase_format(dump_header, "npt_traj.dump") == "lammps-dump-text"
 
 
+def test_workflow_parameter_validation():
+    """FeffParametersWidget validates required parameters and rejects invalid ones."""
+    from aiidalab_feff.workflow import FeffParametersWidget
+
+    model = WorkflowModel()
+    widget = FeffParametersWidget(model)
+
+    widget.radius.value = -1.0
+    errors = widget.validate()
+    assert any("Radius" in err for err in errors)
+
+
+class DummyXas:
+    """Mock XasData for unit tests without AiiDA DB."""
+
+    def __init__(self, k, chi):
+        self._arrays = {"k": k, "chi_k": chi}
+
+    def get_array(self, name):
+        return self._arrays[name]
+
+
+def test_average_xas_on_common_k_nan_aware():
+    """_average_xas_on_common_k uses NaN-aware statistics."""
+    import numpy as np
+
+    from aiidalab_feff.results import _average_xas_on_common_k
+
+    x1 = DummyXas(np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3]))
+    x2 = DummyXas(np.array([1.0, 2.0]), np.array([0.15, 0.25]))
+
+    k_ref, chi_avg, chi_std = _average_xas_on_common_k([x1, x2])
+    assert np.allclose(k_ref, [1.0, 2.0, 3.0])
+    assert np.allclose(chi_avg[:2], [0.125, 0.225])
+    assert np.allclose(chi_avg[2], 0.3)
+    assert np.isnan(chi_std[2])  # Only 1 sample at k=3.0 gives NaN std
+
+
+
 

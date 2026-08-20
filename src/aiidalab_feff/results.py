@@ -57,16 +57,24 @@ def _ft_larch(k: np.ndarray, chi: np.ndarray, kmin: float, kmax: float,
               kweight: int, dk: float, rmax: float):
     """Run a larch xftf on the given arrays, returning (r, chir_mag).
 
-    Lightweight wrapper around larch's group/xftf so we don't have to materialise
+    Lightweight wrapper around aiida_feff's xftf_arrays so we don't have to materialise
     AiiDA nodes (and so avoid polluting the provenance graph) every time the FT
     parameter sliders move.
     """
-    from larch import Group
-    from larch.xafs import xftf
+    from aiida_feff.calcfunctions.larch import xftf_arrays
 
-    grp = Group(k=k, chi=chi)
-    xftf(grp, kmin=kmin, kmax=kmax, kweight=kweight, dk=dk, rmax_out=rmax)
-    return grp.r, np.abs(grp.chir)
+    res = xftf_arrays(
+        k,
+        chi,
+        {
+            "kmin": kmin,
+            "kmax": kmax,
+            "kweight": kweight,
+            "dk": dk,
+            "rmax": rmax,
+        },
+    )
+    return res["r"], res["chir_mag"]
 
 
 def _new_figure_2subplots(figsize=(10, 3)):
@@ -97,9 +105,14 @@ def _average_xas_on_common_k(xas_nodes):
     for node in xas_nodes:
         k_i = np.asarray(node.get_array("k"), dtype=float)
         chi_i = np.asarray(node.get_array("chi_k"), dtype=float)
-        chi_stack.append(np.interp(k_ref, k_i, chi_i, left=0.0, right=0.0))
+        chi_stack.append(np.interp(k_ref, k_i, chi_i, left=np.nan, right=np.nan))
     chi_arr = np.asarray(chi_stack)
-    return k_ref, chi_arr.mean(axis=0), chi_arr.std(axis=0)
+    chi_avg = np.nanmean(chi_arr, axis=0)
+    if chi_arr.shape[0] < 2:
+        chi_std = np.full(chi_arr.shape[1:], np.nan, dtype=float)
+    else:
+        chi_std = np.nanstd(chi_arr, axis=0, ddof=1)
+    return k_ref, chi_avg, chi_std
 
 
 class ResultsWidget(ipw.VBox):
@@ -509,19 +522,26 @@ class ResultsWidget(ipw.VBox):
 
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
-        k, chi_k = scaled_chi_arrays(
+        k_scaled, chi_k_scaled = scaled_chi_arrays(
             k, chi_k, self.comparison_s02.value, self.comparison_e0.value
         )
         n = int(self.kweight.value)
-        weighted = chi_k * (k ** n) if n else chi_k
+        weighted = chi_k_scaled * (k_scaled ** n) if n else chi_k_scaled
 
         label = self._kweight_label(n)
-        ax.plot(k, weighted, label="Simulated")
-        if "chi_k_std" in xas.get_arraynames() and n and self.comparison_e0.value == 0:
-            std = np.asarray(xas.get_array("chi_k_std"), dtype=float) * (k ** n)
+        ax.plot(k_scaled, weighted, label="Simulated")
+        if "chi_k_std" in xas.get_arraynames() and n:
+            from aiida_feff.calcfunctions.experimental import shifted_k_mask
+
+            mask = shifted_k_mask(k, float(self.comparison_e0.value))
+            std = np.asarray(xas.get_array("chi_k_std"), dtype=float)[mask] * (k_scaled ** n)
+            s02_val = float(self.comparison_s02.value)
             ax.fill_between(
-                k, weighted - self.comparison_s02.value * std,
-                weighted + self.comparison_s02.value * std, alpha=0.3, label="±1σ"
+                k_scaled,
+                weighted - s02_val * std,
+                weighted + s02_val * std,
+                alpha=0.3,
+                label="±1σ",
             )
         experimental = self.results_model.experimental_xas
         if self.show_experimental.value and _has_chi_data(experimental):

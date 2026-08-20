@@ -80,6 +80,7 @@ class PathContributionsExplorer(ipw.VBox):
                     "r_eff": path.r_eff,
                     "degeneracy": path.degeneracy,
                     "cw_ratio": path.cw_ratio,
+                    "sig2": getattr(path, "sig2", 0.0),
                     "k": path.k,
                     "feff_data": path.feff_data,
                 }
@@ -92,6 +93,7 @@ class PathContributionsExplorer(ipw.VBox):
             degen = np.mean([item["degeneracy"] for item in items])
             r_eff = np.mean([item["r_eff"] for item in items])
             cw_ratio = np.mean([item["cw_ratio"] for item in items])
+            sig2 = np.mean([item.get("sig2", 0.0) for item in items])
             path_groups.append(
                 {
                     "path_key": f"{scatterer}_{nlegs}_{r_bin:.2f}",
@@ -100,6 +102,7 @@ class PathContributionsExplorer(ipw.VBox):
                     "r_eff": r_eff,
                     "degeneracy": degen,
                     "cw_ratio": cw_ratio,
+                    "sig2": sig2,
                     "k": k,
                     "feff_data": feff_data,
                 }
@@ -173,25 +176,26 @@ class PathContributionsExplorer(ipw.VBox):
         df_r = pd.DataFrame()
         for row in rows:
             try:
-                from larch import Group
-                from larch.xafs import xftf
+                from aiida_feff.calcfunctions.larch import xftf_arrays
 
-                grp = Group(k=row["k"], chi=row["chi"])
-                xftf(
-                    grp,
-                    kmin=self.kmin.value,
-                    kmax=self.kmax.value,
-                    kweight=self.kweight.value,
-                    dk=self.dk.value,
-                    rmax_out=self.rmax.value,
+                res = xftf_arrays(
+                    row["k"],
+                    row["chi"],
+                    {
+                        "kmin": float(self.kmin.value),
+                        "kmax": float(self.kmax.value),
+                        "kweight": int(self.kweight.value),
+                        "dk": float(self.dk.value),
+                        "rmax": float(self.rmax.value),
+                    },
                 )
                 df_r = pd.concat(
                     [
                         df_r,
                         pd.DataFrame(
                             {
-                                "r": grp.r,  # type: ignore[attr-defined]
-                                "chir_mag": np.abs(grp.chir),  # type: ignore[attr-defined]
+                                "r": res["r"],
+                                "chir_mag": res["chir_mag"],
                                 "path": row["path"],
                             }
                         ),
@@ -219,28 +223,17 @@ class PathContributionsExplorer(ipw.VBox):
             display(chart_k | chart_r)  # noqa: F821
 
     def _compute_chi(self, group: dict, k_grid: np.ndarray) -> np.ndarray:
-        """Recompute χ(k) from averaged FEFF parameters."""
-        k_param = group["k"]
-        data = group["feff_data"]
-        col_idx = {name: i for i, name in enumerate(FEFF_DATA_COLS)}
-        amp = data[:, col_idx["mag_feff"]]
-        pha = data[:, col_idx["pha_feff"]]
-        lam = data[:, col_idx["lam"]]
-        rep = data[:, col_idx["rep"]]
-        reff = group["r_eff"]
-        degen = group["degeneracy"]
+        """Recompute χ(k) from averaged FEFF parameters using the canonical EXAFS equation."""
+        from aiida_feff.calcfunctions.exafs import path_chi
 
-        amp_i = np.interp(k_grid, k_param, amp)
-        pha_i = np.interp(k_grid, k_param, pha)
-        lam_i = np.interp(k_grid, k_param, lam)
-        rep_i = np.interp(k_grid, k_param, rep)
-
-        q = k_grid
-        pp = (rep_i + 1j / np.clip(lam_i, 1e-6, None)) ** 2
-        p = np.sqrt(pp)
-        cchi = np.exp(-2 * reff * p.imag + 1j * (2 * q * reff + pha_i))
-        cchi = degen * amp_i * cchi / (q * reff**2)
-        return np.asarray(cchi.imag, dtype=np.float64)
+        return path_chi(
+            k_native=group["k"],
+            feff_data=group["feff_data"],
+            r_eff=group["r_eff"],
+            degeneracy=group["degeneracy"],
+            k_out=k_grid,
+            sigma2=float(group.get("sig2", 0.0)),
+        )
 
     def set_structure(self, structure_node):
         """Set an optional structure for the 3-D viewer."""

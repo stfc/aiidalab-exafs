@@ -189,12 +189,22 @@ def _summarize_workflow(node: WorkChainNode) -> dict:
     parameters_node = getattr(node.inputs, "parameters", None)
     parameters = parameters_node.get_dict() if isinstance(parameters_node, orm.Dict) else {}
     structures_namespace = getattr(node.inputs, "structures", None)
-    structures = (
-        [getattr(structures_namespace, key) for key in structures_namespace]
-        if structures_namespace is not None
-        else []
-    )
-    structure = structures[0] if structures else None
+    if structures_namespace is not None:
+        structures = [getattr(structures_namespace, key) for key in structures_namespace]
+        structure = structures[0] if structures else None
+        n_structures = len(structures)
+    elif hasattr(node.inputs, "trajectory"):
+        trajectory = node.inputs.trajectory
+        step_ids = getattr(node.inputs, "step_ids", None)
+        indices = step_ids.get_list() if step_ids is not None else list(range(trajectory.num_frames))
+        n_structures = len(indices)
+        first_idx = trajectory.get_index_from_stepid(indices[0]) if indices else 0
+        structure = trajectory.get_step_structure(first_idx) if n_structures > 0 else None
+    else:
+        structures = []
+        structure = None
+        n_structures = 0
+
     formula = "Unknown material"
     absorber = f"Unknown {str(parameters.get('edge', '')).upper()}-edge".strip()
     if isinstance(structure, StructureData):
@@ -224,7 +234,7 @@ def _summarize_workflow(node: WorkChainNode) -> dict:
         "label": node.label,
         "formula": formula,
         "absorber": absorber,
-        "n_structures": len(structures),
+        "n_structures": n_structures,
         "n_failed": n_failed,
     }
 

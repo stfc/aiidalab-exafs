@@ -269,21 +269,34 @@ class ProcessWidget(ipw.VBox):
                 averaged_xas[key] = getattr(outputs.averaged_xas, key)
 
         # Build the per-(frame, site) XasData grid for subsampling/convergence
-        # by walking each FeffCalculation child for its xas_data output. Only
-        # successful (finished_ok) children contribute. Missing pairs are simply
-        # absent.
+        # by walking each FeffCalculation / FeffBatchCalculation child for its
+        # xas_data output. Only successful (finished_ok) children contribute.
+        # Missing pairs are simply absent.
         xas_grid: dict[tuple[int, int], object] = {}
         for child in process_node.called:
-            if getattr(child, "process_label", None) != "FeffCalculation":
+            if not getattr(child, "is_finished_ok", False):
                 continue
-            if not child.is_finished_ok or "xas_data" not in child.outputs:
-                continue
-            try:
-                xas_grid[(child.inputs.frame_idx.value, child.inputs.site_idx.value)] = (
-                    child.outputs.xas_data
-                )
-            except (KeyError, AttributeError):  # noqa: PERF203
-                continue
+            proc_label = getattr(child, "process_label", None)
+            if proc_label == "FeffCalculation" and "xas_data" in child.outputs:
+                try:
+                    xas_grid[(child.inputs.frame_idx.value, child.inputs.site_idx.value)] = (
+                        child.outputs.xas_data
+                    )
+                except (KeyError, AttributeError):  # noqa: PERF203
+                    continue
+            elif proc_label == "FeffBatchCalculation" and hasattr(child.outputs, "xas_data"):
+                try:
+                    for snap_key in dir(child.outputs.xas_data):
+                        if snap_key.startswith("snap_"):
+                            parts = snap_key.split("_")
+                            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                                frame_idx = int(parts[1])
+                                site_idx = int(parts[2])
+                                xas_grid[(frame_idx, site_idx)] = getattr(
+                                    child.outputs.xas_data, snap_key
+                                )
+                except Exception:  # noqa: BLE001
+                    continue
 
         # Extract absorber element + edge for plot titles/legends.
         edge = ""

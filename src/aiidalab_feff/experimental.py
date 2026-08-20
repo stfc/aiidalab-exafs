@@ -27,6 +27,7 @@ class ExperimentalXasDatabaseQueryWidget(AiiDADatabaseQueryWidget):
             (label, node)
             for label, node in self.results.options
             if node is False
+            or node.base.attributes.get("source_kind", None) == "experimental"
             or node.base.extras.get("source_kind", None) == "experimental"
         ]
 

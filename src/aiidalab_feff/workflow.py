@@ -137,8 +137,8 @@ class FeffParametersWidget(ipw.VBox):
     def _on_precompute_change(self, change):
         self.model.precompute_potentials = change["new"]
 
-    def get_parameters(self) -> FeffParameters:
-        """Return a validated FeffParameters node from the form values."""
+    def get_parameter_dict(self) -> dict:
+        """Return the dictionary of FEFF parameters from the form values."""
         params: dict = {
             "edge": self.edge.value,
             "spectrum_type": "EXAFS",
@@ -163,7 +163,11 @@ class FeffParametersWidget(ipw.VBox):
                 t.strip() for t in self.delete_tags.value.split(",") if t.strip()
             ]
 
-        return FeffParameters(dict=params)
+        return params
+
+    def get_parameters(self) -> FeffParameters:
+        """Return a validated FeffParameters node from the form values."""
+        return FeffParameters(dict=self.get_parameter_dict())
 
     def get_path_cw_threshold(self) -> float:
         """Return the path CW threshold used by the process builder."""
@@ -178,6 +182,11 @@ class FeffParametersWidget(ipw.VBox):
             errors.append("S₀² must be greater than or equal to 0.")
         if self.nleg.value <= 0:
             errors.append("NLEG must be greater than 0.")
+        try:
+            params = self.get_parameter_dict()
+            FeffParameters._validate_keys(params)
+        except ValueError as exc:
+            errors.append(str(exc))
         return errors
 
     def reset(self):
