@@ -4,12 +4,12 @@
 It configures the AiiDAlab profile with correct mount paths, starts the
 container, installs the editable packages, and configures AiiDA.
 
-Sibling dependencies (aiida-feff, alc-aiidalab-widgets) are by default
-installed from their GitHub ``main`` branches. Set the environment variable
+Sibling dependencies (alc-dls-exafs / md-exafs, aiida-feff, alc-aiidalab-widgets)
+are by default installed from GitHub. Set the environment variable
 ``AIIDALAB_FEFF_DEV=1`` to switch to development mode: sibling directories
-``../stfc_aiida-feff`` and ``../alc-aiidalab-widgets`` are then bind-mounted
-into the container and editable-installed, giving a live edit loop for
-co-development.
+``../alc-dls-exafs``, ``../stfc_aiida-feff`` and ``../alc-aiidalab-widgets``
+are then bind-mounted into the container and editable-installed, giving a live
+edit loop for co-development.
 """
 
 from __future__ import annotations
@@ -25,6 +25,22 @@ import toml
 # GitHub URLs for the sibling dependencies (used in default / non-dev mode).
 _FEFF_GIT_URL = "git+https://github.com/stfc/aiida-feff.git"
 _WIDGETS_GIT_URL = "git+https://github.com/stfc/alc-aiidalab-widgets.git"
+_ALC_GIT_URL = "git+https://github.com/stfc/alc-dls-exafs.git"
+
+# Cap BLAS/OpenMP thread pools inside the container. The FEFF parser drives
+# larch/numpy/scipy linear algebra inside the AiiDA daemon worker, and OpenBLAS
+# defaults to one thread per host core: on a 64-core host each parsed job fans
+# a 64-thread pool hot, adding tens of cores of load on top of the FEFF jobs
+# (observed as load average ~70 for a 32-job ensemble). aiidalab-launch cannot
+# inject container env vars, so these are passed to the daemon-restart exec
+# below; the restarted circusd and its workers inherit them. (The deployment
+# image sets the same vars via Dockerfile ENV, which also covers container
+# restarts that bypass this script.)
+_BLAS_THREAD_ENV = {
+    "OPENBLAS_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+}
 
 
 def detect_runtime(container_name: str) -> str:
@@ -50,6 +66,35 @@ def detect_runtime(container_name: str) -> str:
     sys.exit(1)
 
 
+def _resolve_sibling_repos(workspace_root: Path, dev_mode: bool) -> tuple[Path, Path, Path]:
+    """Return the sibling checkout paths, checking they exist when in dev mode.
+
+    In dev mode these are bind-mounted and editable-installed, so a missing one is
+    a hard error rather than something to discover halfway through the build.
+    """
+    dirs = {
+        "alc-dls-exafs": workspace_root / "alc-dls-exafs",
+        "stfc_aiida-feff": workspace_root / "stfc_aiida-feff",
+        "alc-aiidalab-widgets": workspace_root / "alc-aiidalab-widgets",
+    }
+
+    if not dev_mode:
+        print("=== Sibling dependencies will be installed from GitHub (main) ===")
+        return tuple(dirs.values())  # type: ignore[return-value]
+
+    missing = [name for name, path in dirs.items() if not path.is_dir()]
+    if missing:
+        for name in missing:
+            print(
+                f"ERROR: AIIDALAB_FEFF_DEV=1 but sibling directory {name!r} "
+                f"not found at {dirs[name]}"
+            )
+        sys.exit(1)
+
+    print("=== Dev mode: local sibling repos will be bind-mounted + editable-installed ===")
+    return tuple(dirs.values())  # type: ignore[return-value]
+
+
 def main():
     """Configure, start, and initialize the AiiDAlab Launch container."""
     script_dir = Path(__file__).resolve().parent
@@ -60,21 +105,7 @@ def main():
     # Default (no env var, or AIIDALAB_FEFF_DEV=0): install siblings from GitHub.
     dev_mode = os.environ.get("AIIDALAB_FEFF_DEV", "").strip() in ("1", "true", "True")
 
-    feff_dir = workspace_root / "stfc_aiida-feff"
-    widgets_dir = workspace_root / "alc-aiidalab-widgets"
-
-    if dev_mode:
-        if not feff_dir.is_dir():
-            print(f"ERROR: AIIDALAB_FEFF_DEV=1 but sibling directory 'stfc_aiida-feff' "
-                  f"not found at {feff_dir}")
-            sys.exit(1)
-        if not widgets_dir.is_dir():
-            print(f"ERROR: AIIDALAB_FEFF_DEV=1 but sibling directory 'alc-aiidalab-widgets' "
-                  f"not found at {widgets_dir}")
-            sys.exit(1)
-        print("=== Dev mode: local sibling repos will be bind-mounted + editable-installed ===")
-    else:
-        print("=== Sibling dependencies will be installed from GitHub (main) ===")
+    alc_dir, feff_dir, widgets_dir = _resolve_sibling_repos(workspace_root, dev_mode)
 
     # 1. Locate and load config.toml
     config_dir = Path(click.get_app_dir("org.aiidalab.aiidalab_launch"))
@@ -107,10 +138,11 @@ def main():
 
     # Set up bind mounts. The app itself is ALWAYS bind-mounted (it must be
     # at /home/jovyan/apps/aiidalab-feff for AiiDAlab app discovery and is
-    # editable-installed). The two sibling repos are ONLY bind-mounted in
+    # editable-installed). Sibling repos are ONLY bind-mounted in
     # dev mode; in default mode they are installed from GitHub.
     extra_mounts = [f"{repo_dir}:/home/jovyan/apps/aiidalab-feff:rw"]
     if dev_mode:
+        extra_mounts.append(f"{alc_dir}:/tmp/src/alc-dls-exafs:rw")
         extra_mounts.append(f"{feff_dir}:/tmp/src/stfc_aiida-feff:rw")
         extra_mounts.append(f"{widgets_dir}:/tmp/src/alc-aiidalab-widgets:rw")
     profile["extra_mounts"] = extra_mounts
@@ -152,6 +184,7 @@ def main():
     # pre-existing checkpoint directories world-writable so jovyan can save.
     chmod_paths = ["/home/jovyan/apps/aiidalab-feff"]
     if dev_mode:
+        chmod_paths.append("/tmp/src/alc-dls-exafs")
         chmod_paths.append("/tmp/src/stfc_aiida-feff")
         chmod_paths.append("/tmp/src/alc-aiidalab-widgets")
     subprocess.run([
@@ -183,11 +216,14 @@ def main():
     sibling_targets = []
     if dev_mode:
         print("  Dev mode: editable-installing siblings from bind-mounts")
-        sibling_targets = ["-e", "/tmp/src/stfc_aiida-feff",
-                           "-e", "/tmp/src/alc-aiidalab-widgets"]
+        sibling_targets = [
+            "-e", "/tmp/src/alc-dls-exafs",
+            "-e", "/tmp/src/stfc_aiida-feff",
+            "-e", "/tmp/src/alc-aiidalab-widgets",
+        ]
     else:
-        print("  Installing siblings from GitHub main")
-        sibling_targets = [_FEFF_GIT_URL, _WIDGETS_GIT_URL]
+        print("  Installing siblings from GitHub")
+        sibling_targets = [_ALC_GIT_URL, _FEFF_GIT_URL, _WIDGETS_GIT_URL]
 
     install_cmd = [
         runtime,
@@ -213,8 +249,11 @@ def main():
     # pick up the newly installed plugins. (setup-aiida.sh below only starts
     # the daemon if it is not already running, so it will skip — that's fine.)
     print("\n=== Restarting AiiDA daemon to load freshly installed plugins ===")
+    blas_env_args = [
+        arg for key, val in _BLAS_THREAD_ENV.items() for arg in ("-e", f"{key}={val}")
+    ]
     subprocess.run([
-        runtime, "exec", container_name,
+        runtime, "exec", *blas_env_args, container_name,
         "verdi", "daemon", "restart",
     ], check=False)
 
@@ -224,6 +263,13 @@ def main():
         "aiidalab-launch", "exec", "-p", profile_name, "--",
         "bash", "/home/jovyan/apps/aiidalab-feff/containers/start_restapi.sh"
     ], check=True)
+
+    # 5b. Start the Marimo server for the Debye-Waller notebook
+    print("\n=== Starting Marimo server inside the container ===")
+    subprocess.run([
+        "aiidalab-launch", "exec", "-p", profile_name, "--",
+        "bash", "/home/jovyan/apps/aiidalab-feff/containers/start_marimo.sh"
+    ], check=False)
 
     # 6. Expose the REST API on a host port via a proxy container.
     #
@@ -259,6 +305,24 @@ def main():
         "TCP-LISTEN:5000,fork",
         f"TCP:{container_name}:5000",
     ], check=True)
+
+    print("\n=== Exposing Marimo server on host port 2718 ===")
+    marimo_proxy_name = "aiidalab-feff-marimo-proxy"
+    subprocess.run([runtime, "rm", "-f", marimo_proxy_name], check=False)
+    subprocess.run([
+        runtime,
+        "run",
+        "-d",
+        "--name",
+        marimo_proxy_name,
+        "--network",
+        proxy_network,
+        "-p",
+        "2718:2718",
+        "alpine/socat",
+        "TCP-LISTEN:2718,fork",
+        f"TCP:{container_name}:2718",
+    ], check=False)
 
     # 7. Configure AiiDA ( localhost computer, codes, and daemon )
     print("\n=== Running AiiDA configuration inside the container ===")
@@ -342,6 +406,9 @@ def main():
                 print("")
                 print("  2. JupyterLab Editor Mode (to view/edit code):")
                 print("     " + lab_url)
+                print("")
+                print("  3. Marimo Debye-Waller Notebook:")
+                print("     http://localhost:2718")
                 print("=================================================================")
             else:
                 print("AiiDAlab is running. Run 'aiidalab-launch status' to find the URL.")

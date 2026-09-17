@@ -19,6 +19,17 @@
 
 FROM ghcr.io/stfc/alc-ux/base:py310
 
+# Cap BLAS/OpenMP thread pools. The FEFF parser drives larch/numpy/scipy linear
+# algebra inside the AiiDA daemon worker, and OpenBLAS defaults to one thread
+# per host core: on a 64-core host each parsed job fans a 64-thread pool hot,
+# adding tens of cores of load on top of the FEFF jobs themselves (observed as
+# a load average of ~70 for a 32-job ensemble). The parse math is tiny
+# (100-point spectra), so one thread is plenty; FEFF is a separate Fortran
+# binary and is unaffected.
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
+
 USER root
 
 # ---------------------------------------------------------------------------

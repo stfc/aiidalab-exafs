@@ -153,6 +153,26 @@ the values above.
 - The REST API runs on container port 5000; `startup.sh` maps it to the host
   port 5050 by default (`--restapi-port 0` disables it). Apptainer shares the
   host network, so no mapping is needed there.
+- BLAS/OpenMP thread pools are capped at one thread
+  (`OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`): the FEFF
+  parser runs larch/numpy linear algebra inside the AiiDA daemon worker, and
+  OpenBLAS otherwise fans out one thread per host core on every parsed job,
+  adding tens of cores of load on many-core hosts. The deployment image sets
+  these via `Dockerfile` `ENV`; for the live-development container they are
+  passed to the daemon-restart in `launch.py` (aiidalab-launch cannot inject
+  container env vars, so a container restart that bypasses `launch.py` loses
+  them until `launch.py` is re-run).
+- The Marimo notebook server runs in read-only App Mode (`marimo run`, not
+  `marimo edit`) on container port 2718, which `launch.py` exposes on host port
+  2718 via a socat proxy container. Skew-protection is left enabled: an
+  "invalid server token" warning in `/tmp/marimo-server.log` means a browser tab
+  predates the current server, and the fix is to reload the tab.
+- CORS is closed by default. Set `MARIMO_ALLOW_ORIGINS` before running
+  `start_marimo.sh` only if the app is reached through a proxy that rewrites
+  `Origin`, and name the origin explicitly rather than using `*`.
+- Neither port 5050 nor 2718 is authenticated. On a shared host, bind them to
+  loopback and reach them over SSH:
+  `ssh -L 5050:localhost:5050 -L 2718:localhost:2718 <host>`.
 
 ---
 
@@ -163,6 +183,8 @@ the values above.
 | `launch.py` | Live-development launcher (aiidalab-launch, bind-mount + editable install). |
 | `setup-aiida.sh` | Idempotent AiiDA configuration: profile wait, localhost computer, `feff`/`python3` codes, daemon. Used inside the deployment image hook and by `launch.py`. |
 | `start_restapi.sh` | Starts/restarts the AiiDA REST API on `0.0.0.0:5000` inside the container. |
+| `start_marimo.sh` | Starts the Marimo Debye-Waller notebook in read-only App Mode on `0.0.0.0:2718` inside the container. |
+| `proxy.py` | Host-side TCP forwarder; fallback for hosts where `launch.py`'s socat proxy containers cannot be used. |
 | `95_setup-aiidalab-feff.sh` | `before-notebook.d` hook baked into the deployment image; runs `setup-aiida.sh` + `start_restapi.sh` on every container start. |
 | `Dockerfile` | Deployment image definition (app + deps baked in). |
 | `build.sh` | Convenience build wrapper around the `Dockerfile`. |
