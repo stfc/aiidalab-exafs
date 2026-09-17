@@ -10,6 +10,14 @@ from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_feff.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
 
+#: How long the background monitor keeps polling a submitted process before giving up.
+_MONITOR_TIMEOUT_SECONDS = 300.0
+
+#: How long the monitor thread waits for the kernel's event loop to run one poll.
+#: The loop is blocked while a cell executes, so a missed poll is normal; we skip it
+#: rather than parking the thread until the kernel next goes idle.
+_MONITOR_CALLBACK_TIMEOUT_SECONDS = 10.0
+
 
 def build_workchain_builder(
     input_model: InputModel,
@@ -212,29 +220,67 @@ class ProcessWidget(ipw.VBox):
             self._on_finished(process_node)
             return
 
-        # Simple polling: refresh every 2 seconds up to 5 minutes.
-        # In a real app, use a background thread or AiiDAlab process monitor.
+        # Poll in a background thread, but run every ORM access and widget
+        # update back on the kernel's main thread: AiiDA's SQLAlchemy session
+        # is thread-scoped (psql_dos uses scoped_session), so nodes loaded in
+        # this thread would be detached when a widget callback later touches
+        # them on the main thread — the first uncached lazy access raises
+        # ``InvalidRequestError: Instance ... is not persistent within this
+        # Session``. ``call_soon_threadsafe`` schedules onto the ipykernel
+        # asyncio loop, which is where widget callbacks execute.
+        import asyncio
         import threading
+        import time
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Not called from the kernel's loop (e.g. a plain script or a test).
+            # Nothing will ever service call_soon_threadsafe, so don't pretend to poll.
+            self.status.warning("No running event loop; process monitoring is disabled.")
+            return
+
+        poll_interval = 2.0
+        deadline = time.monotonic() + _MONITOR_TIMEOUT_SECONDS
 
         def _poll():
-            import time
+            while time.monotonic() < deadline:
+                time.sleep(poll_interval)
+                done = threading.Event()
+                outcome: dict[str, bool] = {}
 
-            for _ in range(150):
-                time.sleep(2)
-                current = self.submission_model.process_node
-                if current is None:
-                    return
-                # Reload fresh from the DB each iteration (see note above).
-                fresh = orm.load_node(current.pk)
-                self.submission_model.process_node = fresh
-                if fresh.is_terminated:  # type: ignore[attr-defined]
+                def _check(outcome=outcome, done=done):
+                    try:
+                        current = self.submission_model.process_node
+                        if current is None:
+                            outcome["stop"] = True
+                            return
+                        # Reload fresh from the DB each iteration (see note above).
+                        fresh = orm.load_node(current.pk)
+                        self.submission_model.process_node = fresh
+                        with self.monitor_output:
+                            self.monitor_output.clear_output()
+                            print(f"Process {fresh.pk}: {fresh.process_state}")  # type: ignore[attr-defined]
+                        outcome["terminated"] = bool(fresh.is_terminated)  # type: ignore[attr-defined]
+                    finally:
+                        done.set()
+
+                loop.call_soon_threadsafe(_check)
+                # Bounded wait: the loop is blocked while the kernel executes a
+                # cell, which is routine. Without a timeout this thread would
+                # park until the kernel next goes idle, and the 5-minute budget
+                # would silently become unbounded wall-clock time.
+                if not done.wait(timeout=_MONITOR_CALLBACK_TIMEOUT_SECONDS):
+                    continue
+                if outcome.get("stop") or outcome.get("terminated"):
                     break
-                with self.monitor_output:
-                    self.monitor_output.clear_output()
-                    print(f"Process {fresh.pk}: {fresh.process_state}")  # type: ignore[attr-defined]
-            self._on_finished(self.submission_model.process_node)
 
-        thread = threading.Thread(target=_poll, daemon=True)
+            # Re-read the node on the loop rather than handing one across threads.
+            loop.call_soon_threadsafe(
+                lambda: self._on_finished(self.submission_model.process_node)
+            )
+
+        thread = threading.Thread(target=_poll, daemon=True, name="feff-process-monitor")
         thread.start()
 
     def _on_finished(self, process_node):
