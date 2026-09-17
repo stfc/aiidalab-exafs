@@ -33,7 +33,7 @@ class FeffApp(ipw.VBox):
         self.results_model = ResultsModel()
 
         self.input_widget = InputWidget(self.input_model)
-        self.workflow_widget = FeffParametersWidget(self.workflow_model)
+        self.workflow_widget = FeffParametersWidget(self.workflow_model, self.input_model)
         self.resources_widget = ResourcesWidget(self.workflow_model)
         self.process_widget = ProcessWidget(
             self.input_model,
@@ -74,12 +74,27 @@ class FeffApp(ipw.VBox):
         self.next_button.on_click(self._on_next)
 
         self.new_button = create_new_calculation_button(self)
+        onclick_js = (
+            "window.open('http://' + window.location.hostname + ':2718', '_blank')"
+        )
+        nav_style_css = (
+            "display: inline-flex; align-items: center; justify-content: center; "
+            "height: 28px; padding: 0 10px; margin-left: 8px; text-decoration: none; "
+            "border: 1px solid #ccc; background-color: #f8f9fa; color: #333; "
+            "border-radius: 4px; font-weight: bold; font-size: 12px; cursor: pointer;"
+        )
+        self.marimo_link = ipw.HTML(
+            f'<a href="javascript:void(0)" onclick="{onclick_js}" style="{nav_style_css}" '
+            'title="Open Debye-Waller Marimo Notebook (Port 2718)">'
+            '⚡ Marimo DW Notebook ↗</a>'
+        )
 
         self.nav_bar = ipw.HBox(
             [
                 self.back_button,
                 self.next_button,
                 self.new_button,
+                self.marimo_link,
             ]
         )
 
@@ -170,6 +185,22 @@ class FeffApp(ipw.VBox):
         self.content.children = [self.steps[self._current_step]]
         self.back_button.disabled = self._current_step == 0
         self.next_button.disabled = self._current_step == len(self.steps) - 1
+
+        if self._current_step == self.STEP_WORKFLOW:
+            self.workflow_widget.input_model = self.input_model
+            dw = getattr(self.workflow_widget, "dw_screening", None)
+            if dw and not dw.absorber.value:
+                symbols = None
+                if self.input_model.trajectory is not None:
+                    symbols = getattr(self.input_model.trajectory, "symbols", None)
+                elif self.input_model.structure is not None:
+                    from aiidalab_feff.utils import get_symbols
+
+                    symbols = get_symbols(self.input_model.structure)
+                if symbols and self.input_model.absorbing_atoms:
+                    idx = self.input_model.absorbing_atoms[0]
+                    if 0 <= idx < len(symbols):
+                        dw.absorber.value = symbols[idx]
 
         if self._current_step == self.STEP_PROCESS:
             self.workflow_widget.get_parameters()  # ensure model.parameters is current

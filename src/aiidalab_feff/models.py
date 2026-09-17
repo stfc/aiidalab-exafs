@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from aiida.orm import Code, Computer, ProcessNode, StructureData, TrajectoryData
+from aiida_feff.data.archive import ExafsArchiveData
 from aiida_feff.data.pathcontributions import PathContributionsData
 from aiida_feff.data.xasdata import XasData
-from traitlets import Bool, Dict as TraitDict, Float, HasTraits, Instance, Int, List, Unicode
+from traitlets import Bool, Float, HasTraits, Instance, Int, List, Unicode
+from traitlets import Dict as TraitDict
 
 
 class InputModel(HasTraits):
@@ -24,8 +26,10 @@ class InputModel(HasTraits):
 
     def is_single_structure(self) -> bool:
         """Return True if a single structure has been provided."""
-        return self.structure is not None or (self.trajectory is not None and len(self.selected_indices or []) == 1) or (
-            self.structures is not None and len(self.structures) == 1
+        return (
+            self.structure is not None
+            or (self.trajectory is not None and len(self.selected_indices or []) == 1)
+            or (self.structures is not None and len(self.structures) == 1)
         )
 
     def is_ensemble(self) -> bool:
@@ -105,6 +109,7 @@ class ResultsModel(HasTraits):
     averaged_xas = TraitDict(allow_none=True)  # {label: XasData}
     n_failed = Int(allow_none=True)
     path_contributions = Instance(PathContributionsData, allow_none=True)
+    archive = Instance(ExafsArchiveData, allow_none=True)
     is_ensemble = Bool(default_value=False)
     process_node = Instance(ProcessNode, allow_none=True)
     # Absorber / edge metadata for plot titles & legends, e.g. "Mn K-edge".
@@ -123,6 +128,7 @@ class ResultsModel(HasTraits):
         self.averaged_xas = None
         self.n_failed = None
         self.path_contributions = None
+        self.archive = None
         self.is_ensemble = False
         self.process_node = None
         self.edge = ""
@@ -142,8 +148,12 @@ class ResultsModel(HasTraits):
 
     def has_path_contributions(self) -> bool:
         """Return True if path contributions are available."""
-        return self.path_contributions is not None
-
-    def has_path_contributions(self) -> bool:
-        """Return True if path contributions are available."""
-        return self.path_contributions is not None
+        if self.path_contributions is not None:
+            return True
+        if self.archive is not None:
+            try:
+                paths = list(self.archive.iter_paths())
+                return len(paths) > 0
+            except Exception:
+                return False
+        return False

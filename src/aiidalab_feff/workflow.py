@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import ipywidgets as ipw
 from aiida_feff.data.parameters import VALID_EDGE_LABELS, FeffParameters
 
@@ -11,9 +13,10 @@ from aiidalab_feff.models import WorkflowModel
 class FeffParametersWidget(ipw.VBox):
     """Widget for editing FEFF calculation parameters."""
 
-    def __init__(self, model: WorkflowModel):
+    def __init__(self, model: WorkflowModel, input_model: Any | None = None):
         self.model = model
         self.model.path_cw_threshold = -1.0
+        self._input_model = input_model or getattr(model, "input_model", None)
 
         self._header = ipw.HTML("<h2>FEFF parameters</h2>")
 
@@ -120,16 +123,37 @@ class FeffParametersWidget(ipw.VBox):
         self.path_cw_threshold.observe(self._on_path_cw_threshold_change, names="value")
         self.precompute_potentials.observe(self._on_precompute_change, names="value")
 
+        # Debye-Waller in-memory pre-screening widget (ADR 0005)
+        from aiidalab_feff.dw_widget import DebyeWallerScreeningWidget
+
+        self.dw_screening = DebyeWallerScreeningWidget(self._input_model)
+        self.dw_accordion = ipw.Accordion(children=[self.dw_screening])
+        self.dw_accordion.set_title(0, "Debye–Waller / MSRD Pre-Screening (In-Memory)")
+        self.dw_accordion.selected_index = None
+
         super().__init__(
             [
                 self._header,
                 ipw.HBox([self.edge, self.radius, self.s02]),
                 ipw.HBox([self.nleg, self.exclude_hydrogen, self.path_cw_threshold]),
                 self.precompute_potentials,
+                self.dw_accordion,
                 self.advanced_toggle,
                 self.advanced_box,
             ]
         )
+
+    @property
+    def input_model(self) -> Any | None:
+        """Return the current input model."""
+        return self._input_model
+
+    @input_model.setter
+    def input_model(self, value: Any | None):
+        """Update the input model and forward it to the Debye-Waller screening widget."""
+        self._input_model = value
+        if hasattr(self, "dw_screening"):
+            self.dw_screening.input_model = value
 
     def _on_path_cw_threshold_change(self, change):
         self.model.path_cw_threshold = change["new"]

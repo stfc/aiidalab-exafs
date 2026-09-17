@@ -210,8 +210,8 @@ def _summarize_workflow(node: WorkChainNode) -> dict:
     if isinstance(structure, StructureData):
         formula = structure.get_formula(mode="hill")
         atoms = parameters.get("absorbing_atoms", [])
-        if isinstance(atoms, int):
-            atoms = [atoms]
+        if not isinstance(atoms, list):
+            atoms = [atoms] if atoms else []
         elements = sorted(
             {
                 _site_element(structure, index)
@@ -222,8 +222,8 @@ def _summarize_workflow(node: WorkChainNode) -> dict:
         )
         edge = str(parameters.get("edge", "")).upper()
         absorber = f"{'/'.join(elements) or 'Unknown'} {edge}-edge"
-        if atoms:
-            absorber += f" (sites {', '.join(str(index) for index in atoms)})"
+        if len(atoms) > 1:
+            absorber += f" ({len(atoms)} sites)"
     n_failed = None
     failed_node = getattr(node.outputs, "n_failed", None)
     if isinstance(failed_node, orm.Int):

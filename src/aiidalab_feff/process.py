@@ -351,6 +351,8 @@ class ProcessWidget(ipw.VBox):
             params = process_node.inputs.parameters.get_dict()
             edge = str(params.get("edge", "")).upper()
             atoms = params.get("absorbing_atoms", None) or []
+            if not isinstance(atoms, list):
+                atoms = [atoms] if atoms else []
             # Resolve element symbol(s) from the first input structure.
             if "trajectory" in process_node.inputs:
                 trajectory = process_node.inputs.trajectory
@@ -364,14 +366,13 @@ class ProcessWidget(ipw.VBox):
 
             symbols = get_symbols(first_struct)
             elements = sorted({symbols[i] for i in atoms if 0 <= i < len(symbols)})
+            n_sites = len(atoms)
             if len(elements) == 1:
-                el = elements[0]
-                if len(atoms) > 1:
-                    absorber_label = f"{el} @ sites {','.join(str(a) for a in atoms)}"
-                else:
-                    absorber_label = el
+                absorber_label = f"{elements[0]} ({n_sites} sites)" if n_sites > 1 else elements[0]
             elif elements:
                 absorber_label = "/".join(elements)
+                if n_sites > 1:
+                    absorber_label += f" ({n_sites} sites)"
         except Exception:  # noqa: BLE001
             pass
 
@@ -390,6 +391,8 @@ class ProcessWidget(ipw.VBox):
         self.results_model.n_failed = outputs.n_failed.value
         if hasattr(outputs, "path_contributions"):
             self.results_model.path_contributions = outputs.path_contributions
+        if hasattr(outputs, "archive"):
+            self.results_model.archive = outputs.archive
         self.results_model.averaged_xas = averaged_xas
 
     def reset(self):

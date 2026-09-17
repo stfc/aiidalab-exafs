@@ -14,10 +14,9 @@ from aiida_feff.data.xasdata import XasData
 from alc_aiidalab_widgets.widgets.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 
-from aiidalab_feff.models import ResultsModel
 from aiidalab_feff.experimental import ExperimentalSpectrumWidget
+from aiidalab_feff.models import ResultsModel
 from aiidalab_feff.widgets.paths_explorer import PathContributionsExplorer
-
 
 # k-weight options: (display label, exponent n in kⁿχ(k))
 _KWEIGHTS = [
@@ -40,10 +39,9 @@ def _new_figure(figsize=(6, 4)):
     ``new_figure_manager_given_figure`` — ``fig.canvas`` is then a proper
     ``ipywidgets.Widget`` we can mount in a tab exactly once and redraw freely.
     """
-    from matplotlib.figure import Figure
-
     # Importing the backend registers it and exposes its canvas factory.
     from ipympl.backend_nbagg import new_figure_manager_given_figure
+    from matplotlib.figure import Figure
 
     fig = Figure(figsize=figsize)
     # Attaches a widget FigureCanvas + manager to ``fig``. Number 0 is unused
@@ -79,9 +77,8 @@ def _ft_larch(k: np.ndarray, chi: np.ndarray, kmin: float, kmax: float,
 
 def _new_figure_2subplots(figsize=(10, 3)):
     """Like :func:`_new_figure` but returns two side-by-side axes."""
-    from matplotlib.figure import Figure
-
     from ipympl.backend_nbagg import new_figure_manager_given_figure
+    from matplotlib.figure import Figure
 
     fig = Figure(figsize=figsize)
     new_figure_manager_given_figure(0, fig)
@@ -715,8 +712,9 @@ class ResultsWidget(ipw.VBox):
         # Replace the explorer each time; the PathContributionsExplorer is
         # stateful and bound to a specific node, so reusing one instance across
         # different processes would display stale data.
+        source = self.results_model.path_contributions or self.results_model.archive
         explorer = PathContributionsExplorer(
-            self.results_model.path_contributions,  # type: ignore[arg-type]
+            source,  # type: ignore[arg-type]
         )
         self.paths_tab.children = [explorer]
 

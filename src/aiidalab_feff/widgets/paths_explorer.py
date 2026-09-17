@@ -1,28 +1,26 @@
-"""Path contributions explorer widget for the AiiDAlab FEFF app."""
+"""Path contributions explorer widget for the AiiDAlab FEFF app (ADR 0007)."""
 
 from __future__ import annotations
 
-from collections import defaultdict
-
-import altair as alt
 import ipywidgets as ipw
 import numpy as np
 import pandas as pd
-from aiida_feff.data.pathcontributions import FEFF_DATA_COLS, PathContributionsData
+from aiida_feff.data.archive import ExafsArchiveData
+from aiida_feff.data.pathcontributions import PathContributionsData
 from alc_aiidalab_widgets.widgets.status import Status
 from IPython.display import display
-from weas_widget.atoms_viewer import AtomsViewer
+from md_exafs.viz import build_chi_chart, build_chir_chart, group_path_results
+from weas_widget import WeasWidget
 
 
 class PathContributionsExplorer(ipw.VBox):
-    """Interactive explorer for PathContributionsData nodes.
+    """Interactive explorer for PathContributionsData and ExafsArchiveData nodes.
 
-    This is an ipywidgets-based widget (not a true anywidget) because the
-    underlying visualisation libraries (altair, weas-widget) are already
-    ipywidgets-compatible.
+    Consumes md_exafs.viz for canonical grouping algorithms and Altair charts (ADR 0007).
     """
 
-    def __init__(self, path_contributions: PathContributionsData):
+    def __init__(self, path_contributions: PathContributionsData | ExafsArchiveData):
+        """Build the explorer from any node exposing ``iter_paths()``."""
         self.path_contributions = path_contributions
         self.path_groups = self._load_path_groups()
 
@@ -45,7 +43,7 @@ class PathContributionsExplorer(ipw.VBox):
         self.plot_button.on_click(self._on_plot)
 
         self.charts_output = ipw.Output()
-        self.structure_viewer = AtomsViewer()  # type: ignore[call-arg]
+        self.structure_viewer = WeasWidget()
 
         controls = ipw.VBox(
             [
@@ -68,46 +66,9 @@ class PathContributionsExplorer(ipw.VBox):
         )
 
     def _load_path_groups(self) -> list[dict]:
-        """Load and group paths from the PathContributionsData node."""
-        groups: dict[tuple[str, int, float], list[dict]] = defaultdict(list)
-        for path in self.path_contributions.iter_paths():
-            r_bin = round(path.r_eff / 0.1) * 0.1
-            key = (path.scatterer, path.nlegs, r_bin)
-            groups[key].append(
-                {
-                    "scatterer": path.scatterer,
-                    "nlegs": path.nlegs,
-                    "r_eff": path.r_eff,
-                    "degeneracy": path.degeneracy,
-                    "cw_ratio": path.cw_ratio,
-                    "sig2": getattr(path, "sig2", 0.0),
-                    "k": path.k,
-                    "feff_data": path.feff_data,
-                }
-            )
-
-        path_groups = []
-        for (scatterer, nlegs, r_bin), items in groups.items():
-            k = items[0]["k"]
-            feff_data = np.mean([item["feff_data"] for item in items], axis=0)
-            degen = np.mean([item["degeneracy"] for item in items])
-            r_eff = np.mean([item["r_eff"] for item in items])
-            cw_ratio = np.mean([item["cw_ratio"] for item in items])
-            sig2 = np.mean([item.get("sig2", 0.0) for item in items])
-            path_groups.append(
-                {
-                    "path_key": f"{scatterer}_{nlegs}_{r_bin:.2f}",
-                    "scatterer": scatterer,
-                    "nlegs": nlegs,
-                    "r_eff": r_eff,
-                    "degeneracy": degen,
-                    "cw_ratio": cw_ratio,
-                    "sig2": sig2,
-                    "k": k,
-                    "feff_data": feff_data,
-                }
-            )
-        return sorted(path_groups, key=lambda x: x["r_eff"])
+        """Load and group paths using canonical md_exafs.viz grouping."""
+        paths = list(self.path_contributions.iter_paths())
+        return group_path_results(paths, r_bin_width=0.1)
 
     def _build_table(self) -> ipw.SelectMultiple:
         """Build a selectable table of path groups."""
@@ -153,7 +114,7 @@ class PathContributionsExplorer(ipw.VBox):
                 }
             )
 
-        # k-space plot
+        # k-space plot using md_exafs.viz
         df_k = pd.DataFrame(
             [
                 {"k": k_val, "chi": chi_val, "path": row["path"]}
@@ -161,22 +122,13 @@ class PathContributionsExplorer(ipw.VBox):
                 for k_val, chi_val in zip(row["k"], row["chi"], strict=False)
             ]
         )
-        chart_k = (
-            alt.Chart(df_k)
-            .mark_line()
-            .encode(
-                x="k:Q",
-                y="chi:Q",
-                color="path:N",
-            )
-            .properties(width=400, height=250, title="χ(k)")
-        )
+        chart_k = build_chi_chart(df_k)
 
         # R-space via larch
         df_r = pd.DataFrame()
         for row in rows:
             try:
-                from aiida_feff.calcfunctions.larch import xftf_arrays
+                from md_exafs.spectra import xftf_arrays
 
                 res = xftf_arrays(
                     row["k"],
@@ -207,16 +159,8 @@ class PathContributionsExplorer(ipw.VBox):
                     print("larch is required for R-space plots.")
                 return
 
-        chart_r = (
-            alt.Chart(df_r)
-            .mark_line()
-            .encode(
-                x="r:Q",
-                y="chir_mag:Q",
-                color="path:N",
-            )
-            .properties(width=400, height=250, title="|χ(R)|")
-        )
+        # R-space plot using md_exafs.viz
+        chart_r = build_chir_chart(df_r)
 
         self.charts_output.clear_output()
         with self.charts_output:
@@ -224,7 +168,7 @@ class PathContributionsExplorer(ipw.VBox):
 
     def _compute_chi(self, group: dict, k_grid: np.ndarray) -> np.ndarray:
         """Recompute χ(k) from averaged FEFF parameters using the canonical EXAFS equation."""
-        from aiida_feff.calcfunctions.exafs import path_chi
+        from md_exafs.paths import path_chi
 
         return path_chi(
             k_native=group["k"],

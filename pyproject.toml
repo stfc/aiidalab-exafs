@@ -34,6 +34,9 @@ dependencies = [
     "ase>=3.22",
     "weas-widget>=0.1.26",
     "altair>=5.0",
+    "md-exafs>=0.2.0",
+    "marimo>=0.16.4",
+    "jupyter-server-proxy",
     # REST API for the aiida-explorer button
     "flask-cors",
     "flask-restful",
@@ -110,6 +113,7 @@ max-statements = 100
 "src/aiidalab_feff/results.py" = ["D107", "D102"]
 "src/aiidalab_feff/widgets/paths_explorer.py" = ["D107", "D102"]
 "src/aiidalab_feff/workflow.py" = ["D107", "D102"]
+"notebooks/*.py" = ["F841", "B018", "E501", "BLE001", "S110", "D", "N803", "PLR0913", "PLR1711", "PLR5501"]
 "tests/**/*.py" = ["D", "N806", "PLC0415", "B017", "E501", "PLR2004"]
 
 [tool.ruff.lint.pydocstyle]
@@ -146,3 +150,6 @@ prerelease = "allow"
 [tool.uv.sources]
 aiida-feff = { path = "../stfc_aiida-feff", editable = true }
 alc-aiidalab-widgets = { path = "../alc-aiidalab-widgets", editable = true }
+# Sibling dev checkouts, matching the convention above. Drop this once md-exafs
+# is released to PyPI and the version pin in [project.dependencies] suffices.
+md-exafs = { path = "../alc-dls-exafs", editable = true }
