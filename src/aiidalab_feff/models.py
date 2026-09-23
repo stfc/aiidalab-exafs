@@ -70,6 +70,8 @@ class WorkflowModel(HasTraits):
     n_workers = Int(allow_none=True)
     python_code = Instance(Code, allow_none=True)
     precompute_potentials = Bool(default_value=False)
+    clean_scratch = Bool(default_value=True)
+    stream_chunk_size = Int(default_value=256, allow_none=True)
 
     def reset(self):
         """Reset all workflow state."""
@@ -83,6 +85,8 @@ class WorkflowModel(HasTraits):
         self.n_workers = None
         self.python_code = None
         self.precompute_potentials = False
+        self.clean_scratch = True
+        self.stream_chunk_size = 256
 
     def is_batch(self) -> bool:
         """Return True if batch submission is enabled."""

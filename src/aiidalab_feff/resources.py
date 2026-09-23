@@ -88,9 +88,25 @@ class ResourcesWidget(ipw.VBox):
         )
         self.python_code_selector.observe(self._on_python_code_change, names="value")
 
+        self.clean_scratch = ipw.Checkbox(
+            value=True,
+            description="Clean scratch on the fly",
+            tooltip="Delete snapshot scratch on the fly to bound disk and inode usage.",
+        )
+        self.clean_scratch.observe(self._on_clean_scratch_change, names="value")
+
+        self.stream_chunk_size = ipw.IntText(
+            value=256,
+            description="Stream chunk size:",
+            layout={"width": "200px"},
+            tooltip="Number of snapshots to process before unlinking scratch.",
+        )
+        self.stream_chunk_size.observe(self._on_stream_chunk_size_change, names="value")
+
         self.batch_box = ipw.VBox(
             [
                 ipw.HBox([self.batch_size, self.n_workers]),
+                ipw.HBox([self.clean_scratch, self.stream_chunk_size]),
                 self.python_code_selector,
             ]
         )
@@ -161,6 +177,12 @@ class ResourcesWidget(ipw.VBox):
         else:
             self.model.python_code = orm.load_code(change["new"])
 
+    def _on_clean_scratch_change(self, change):
+        self.model.clean_scratch = change["new"]
+
+    def _on_stream_chunk_size_change(self, change):
+        self.model.stream_chunk_size = change["new"]
+
     def _on_batch_toggle(self, change):
         self.batch_box.layout.display = "block" if change["new"] else "none"
         if not change["new"]:
@@ -170,6 +192,8 @@ class ResourcesWidget(ipw.VBox):
         else:
             self.model.batch_size = self.batch_size.value
             self.model.n_workers = self.n_workers.value
+            self.model.clean_scratch = self.clean_scratch.value
+            self.model.stream_chunk_size = self.stream_chunk_size.value
 
     def _refresh(self, _=None):
         self._refresh_computers()
@@ -244,6 +268,8 @@ class ResourcesWidget(ipw.VBox):
                 errors.append("Batch size must be greater than 1.")
             if self.n_workers.value <= 0:
                 errors.append("Workers per batch must be greater than 0.")
+            if self.clean_scratch.value and self.stream_chunk_size.value <= 0:
+                errors.append("Stream chunk size must be greater than 0.")
         return errors
 
     def reset(self):
@@ -257,6 +283,8 @@ class ResourcesWidget(ipw.VBox):
         self.batch_toggle.value = False
         self.batch_size.value = 50
         self.n_workers.value = 8
+        self.clean_scratch.value = True
+        self.stream_chunk_size.value = 256
         self.python_code_selector.value = None
         self.status.value = ""
         self.model.reset()

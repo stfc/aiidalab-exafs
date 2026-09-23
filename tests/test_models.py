@@ -97,5 +97,74 @@ def test_average_xas_on_common_k_nan_aware():
     assert np.isnan(chi_std[2])  # Only 1 sample at k=3.0 gives NaN std
 
 
+def test_workflow_model_clean_scratch_defaults():
+    """WorkflowModel exposes clean_scratch and stream_chunk_size with sensible defaults."""
+    model = WorkflowModel()
+    assert model.clean_scratch is True
+    assert model.stream_chunk_size == 256
+
+    model.clean_scratch = False
+    model.stream_chunk_size = 64
+    model.reset()
+    assert model.clean_scratch is True
+    assert model.stream_chunk_size == 256
+
+
+def test_is_usable_workflow():
+    """_is_usable_workflow accepts exit code 0 or partial failures with averaged_xas."""
+    from unittest.mock import MagicMock
+
+    from aiida.orm import WorkChainNode
+
+    from aiidalab_feff.results_library import _is_usable_workflow
+
+    # Successful workflow
+    m_ok = MagicMock(spec=WorkChainNode)
+    m_ok.process_label = "EnsembleExafsWorkChain"
+    m_ok.is_finished_ok = True
+    assert _is_usable_workflow(m_ok)
+
+    # Partially-failed workflow with averaged_xas (exit code 301)
+    m_part = MagicMock(spec=WorkChainNode)
+    m_part.process_label = "EnsembleExafsWorkChain"
+    m_part.is_finished_ok = False
+    m_part.is_finished = True
+    m_part.outputs = MagicMock()
+    m_part.outputs.averaged_xas = MagicMock()
+    assert _is_usable_workflow(m_part)
+
+    # Truly failed workflow with no averaged_xas
+    m_fail = MagicMock(spec=WorkChainNode)
+    m_fail.process_label = "EnsembleExafsWorkChain"
+    m_fail.is_finished_ok = False
+    m_fail.is_finished = True
+    m_fail.outputs = MagicMock(spec=[])  # no averaged_xas attribute
+    assert not _is_usable_workflow(m_fail)
+
+    # Wrong process label
+    m_wrong = MagicMock(spec=WorkChainNode)
+    m_wrong.process_label = "OtherWorkChain"
+    m_wrong.is_finished_ok = True
+    assert not _is_usable_workflow(m_wrong)
+
+
+def test_get_workchain_status_surfaces_exit_message():
+    """get_workchain_status includes exit status and exit message for terminated processes."""
+    from unittest.mock import MagicMock
+
+    from aiidalab_feff.process import get_workchain_status
+
+    node = MagicMock()
+    node.pk = 100
+    node.process_state = "finished"
+    node.is_terminated = True
+    node.exit_status = 301
+    node.exit_message = "2 of 10 snapshot calculations failed."
+
+    status = get_workchain_status(node)
+    assert "PK 100: finished [301]" in status
+    assert "2 of 10 snapshot calculations failed." in status
+
+
 
 
