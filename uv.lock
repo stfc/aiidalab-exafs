@@ -88,7 +88,7 @@ requires-dist = [
     { name = "coveralls", marker = "extra == 'testing'" },
     { name = "h5py", specifier = ">=3.0" },
     { name = "matplotlib", marker = "extra == 'plots'", specifier = ">=3.6" },
-    { name = "md-exafs", specifier = ">=0.2.0" },
+    { name = "md-exafs", specifier = ">=0.3.0,<0.4" },
     { name = "mypy", marker = "extra == 'pre-commit'", specifier = ">=1.10" },
     { name = "numpy", specifier = ">=1.21" },
     { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = ">=3.0" },
@@ -188,7 +188,7 @@ requires-dist = [
     { name = "jupyter-server-proxy" },
     { name = "marimo", specifier = ">=0.16.4" },
     { name = "matplotlib", specifier = ">=3.6" },
-    { name = "md-exafs", editable = "../alc-dls-exafs-paper-fixes" },
+    { name = "md-exafs", specifier = ">=0.3.0,<0.4" },
     { name = "mypy", marker = "extra == 'pre-commit'", specifier = ">=1.10" },
     { name = "numpy", specifier = ">=1.21" },
     { name = "pandas", specifier = ">=2.0" },
@@ -3870,8 +3870,8 @@ wheels = [
 
 [[package]]
 name = "md-exafs"
-version = "0.2.0"
-source = { editable = "../alc-dls-exafs-paper-fixes" }
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ase" },
     { name = "h5py" },
@@ -3884,47 +3884,9 @@ dependencies = [
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "xraylarch" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "altair", marker = "extra == 'notebooks'", specifier = ">=5.0" },
-    { name = "ase", specifier = ">=3.25,<4.0" },
-    { name = "h5py", specifier = ">=3.0" },
-    { name = "marimo", marker = "extra == 'notebooks'", specifier = ">=0.16.4" },
-    { name = "matplotlib", marker = "extra == 'cli'", specifier = ">=3.5" },
-    { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0" },
-    { name = "numpy", specifier = ">=1.22,<3.0.0" },
-    { name = "pymatgen", specifier = ">=2024.1,<2026.0" },
-    { name = "rich", marker = "extra == 'cli'", specifier = ">=13.9.1,<14.0.0" },
-    { name = "scipy", specifier = ">=1.11" },
-    { name = "sphinx", marker = "extra == 'docs'", specifier = ">=7.0" },
-    { name = "sphinx-book-theme", marker = "extra == 'docs'", specifier = ">=1.1.0" },
-    { name = "sphinx-copybutton", marker = "extra == 'docs'", specifier = ">=0.5" },
-    { name = "sphinx-design", marker = "extra == 'docs'", specifier = ">=0.5" },
-    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.17.3,<1.0.0" },
-    { name = "weas-widget", marker = "extra == 'notebooks'", specifier = ">=0.1.26" },
-    { name = "xraylarch", specifier = ">=0.9.47" },
-]
-provides-extras = ["cli", "notebooks", "docs"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "altair", specifier = ">=5.0" },
-    { name = "marimo", specifier = ">=0.16.4" },
-    { name = "matplotlib", specifier = ">=3.5" },
-    { name = "mypy", specifier = ">=1.11.0" },
-    { name = "pytest", specifier = ">=9.0.3,<10.0" },
-    { name = "pytest-cov", specifier = ">=4.1.0,<5.0.0" },
-    { name = "rich", specifier = ">=13.9.1,<14.0.0" },
-    { name = "typer", specifier = ">=0.17.3,<1.0.0" },
-    { name = "types-pyyaml" },
-    { name = "types-setuptools" },
-    { name = "types-tqdm" },
-    { name = "weas-widget", specifier = ">=0.1.26" },
-]
-pre-commit = [
-    { name = "pre-commit", specifier = ">=4.2.0,<5.0.0" },
-    { name = "ruff", specifier = ">=0.11.13,<1.0.0" },
+sdist = { url = "https://files.pythonhosted.org/packages/f5/a4/53a74a075711089685d6b7da2cc939dc9efe15bdeb68f61ac1e7c05268f9/md_exafs-0.3.0.tar.gz", hash = "sha256:5cecd518181239d0e798509e7f0801d939ed53240772f81564ace9db65f08b40", size = 166823, upload-time = "2026-09-23T14:10:52.192Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/3e/2e543ba9c868368f6f98ee6bfadf615bec7085e0b15e11afd97fa9de4dfa/md_exafs-0.3.0-py3-none-any.whl", hash = "sha256:cec1de4d2e67bd9a0f2179627ea9380c341322df395f434177026ee688aef057", size = 180439, upload-time = "2026-09-23T14:10:50.806Z" },
 ]
 
 [[package]]

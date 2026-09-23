@@ -13,6 +13,7 @@ from aiida_feff.calcfunctions.experimental import scale_simulated_spectrum, scal
 from aiida_feff.data.xasdata import XasData
 from alc_aiidalab_widgets.widgets.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
+from md_exafs.spectra import average_chi_arrays
 
 from aiidalab_feff.experimental import ExperimentalSpectrumWidget
 from aiidalab_feff.models import ResultsModel
@@ -87,29 +88,24 @@ def _new_figure_2subplots(figsize=(10, 3)):
 
 
 def _average_xas_on_common_k(xas_nodes):
-    """Interpolate χ(k) from each XasData onto a common k-grid and average.
+    """Average χ(k) across XasData nodes, on the grid of the first.
 
-    Mirrors the plugin's ``_average_xas_data_impl`` but operates purely on
-    numpy arrays so the convergence view can re-average arbitrary subsets of
-    the :math:`(frame, site)` grid without creating AiiDA nodes.
+    The convergence view re-averages arbitrary subsets of the (frame, site)
+    grid interactively, so this returns plain arrays rather than creating
+    AiiDA nodes.  The averaging itself is md-exafs', not a local copy of it:
+    which k count as covered by a given spectrum is a physics question, and
+    answering it twice is how the two answers drift apart.
 
     Returns ``(k_ref, chi_avg, chi_std)`` or ``(None, None, None)`` if empty.
     """
     if not xas_nodes:
         return None, None, None
-    k_ref = np.asarray(xas_nodes[0].get_array("k"), dtype=float)
-    chi_stack = []
-    for node in xas_nodes:
-        k_i = np.asarray(node.get_array("k"), dtype=float)
-        chi_i = np.asarray(node.get_array("chi_k"), dtype=float)
-        chi_stack.append(np.interp(k_ref, k_i, chi_i, left=np.nan, right=np.nan))
-    chi_arr = np.asarray(chi_stack)
-    chi_avg = np.nanmean(chi_arr, axis=0)
-    if chi_arr.shape[0] < 2:
-        chi_std = np.full(chi_arr.shape[1:], np.nan, dtype=float)
-    else:
-        chi_std = np.nanstd(chi_arr, axis=0, ddof=1)
-    return k_ref, chi_avg, chi_std
+
+    avg = average_chi_arrays(
+        [np.asarray(node.get_array("k"), dtype=float) for node in xas_nodes],
+        [np.asarray(node.get_array("chi_k"), dtype=float) for node in xas_nodes],
+    )
+    return avg.k, avg.mean, avg.std
 
 
 class ResultsWidget(ipw.VBox):
