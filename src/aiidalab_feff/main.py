@@ -143,7 +143,7 @@ class FeffApp(ipw.VBox):
             self._update_view()
 
     def _open_saved_results(self, process_node):
-        """Load a selected successful workflow into the results view."""
+        """Load a selected completed workflow into the results view."""
         self.reset()
         self.app_tabs.selected_index = 0
         self.submission_model.process_node = process_node

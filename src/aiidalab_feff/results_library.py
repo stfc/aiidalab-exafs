@@ -13,7 +13,7 @@ from alc_aiidalab_widgets.widgets.status import Status
 
 
 class ResultsLibraryWidget(ipw.VBox):
-    """Find, inspect, and open successful FEFF ensemble results."""
+    """Find, inspect, and open completed FEFF ensemble results."""
 
     def __init__(self, on_open: Callable[[WorkChainNode], None]):
         self.on_open = on_open
@@ -95,7 +95,7 @@ class ResultsLibraryWidget(ipw.VBox):
         self._search()
 
     def _search(self, _=None):
-        """Search and summarize successful ensemble workflows."""
+        """Search and summarize completed ensemble workflows."""
         try:
             start_date = datetime.datetime.strptime(self.start_date.value, "%Y-%m-%d")
             end_date = datetime.datetime.strptime(self.end_date.value, "%Y-%m-%d") + datetime.timedelta(
@@ -118,7 +118,7 @@ class ResultsLibraryWidget(ipw.VBox):
         absorber = self.absorber_filter.value.strip().lower()
         records = []
         for node in query.all(flat=True):
-            if node.process_label != "EnsembleExafsWorkChain" or not node.is_finished_ok:
+            if not _is_usable_workflow(node):
                 continue
             record = _summarize_workflow(node)
             searchable = f"{record['formula']} {record['label']}".lower()
@@ -134,7 +134,7 @@ class ResultsLibraryWidget(ipw.VBox):
         self.results_table.children = _build_table_rows(records, self._select_record)
         self.preview.value = "<em>Select a result to view its details.</em>"
         self.open_button.disabled = True
-        self.status.value = f"Found {len(records)} successful FEFF workflow(s)."
+        self.status.value = f"Found {len(records)} completed FEFF workflow(s)."
 
     def _select_record(self, pk: int):
         """Render the selected workflow's metadata preview."""
@@ -165,11 +165,11 @@ class ResultsLibraryWidget(ipw.VBox):
         if pk is None:
             return
         node = load_node(pk)
-        if isinstance(node, WorkChainNode) and node.is_finished_ok:
+        if _is_usable_workflow(node):
             self.on_open(node)
 
     def _load_pk(self, _):
-        """Load a known successful FEFF workflow as an advanced fallback."""
+        """Load a known completed FEFF workflow as an advanced fallback."""
         try:
             node = load_node(int(self.pk_input.value))
         except Exception:  # noqa: BLE001
@@ -178,10 +178,21 @@ class ResultsLibraryWidget(ipw.VBox):
         if not isinstance(node, WorkChainNode) or node.process_label != "EnsembleExafsWorkChain":
             self.status.failure("That PK is not a FEFF ensemble workflow.")
             return
-        if not node.is_finished_ok:
-            self.status.failure("That FEFF workflow did not finish successfully.")
+        if not _is_usable_workflow(node):
+            self.status.failure("That FEFF workflow did not finish with results.")
             return
         self.on_open(node)
+
+
+def _is_usable_workflow(node: object) -> bool:
+    """Return True if node is an EnsembleExafsWorkChain with available results."""
+    if not isinstance(node, WorkChainNode):
+        return False
+    if node.process_label != "EnsembleExafsWorkChain":
+        return False
+    if node.is_finished_ok:
+        return True
+    return bool(node.is_finished and hasattr(node.outputs, "averaged_xas"))
 
 
 def _summarize_workflow(node: WorkChainNode) -> dict:
@@ -209,9 +220,22 @@ def _summarize_workflow(node: WorkChainNode) -> dict:
     absorber = f"Unknown {str(parameters.get('edge', '')).upper()}-edge".strip()
     if isinstance(structure, StructureData):
         formula = structure.get_formula(mode="hill")
-        atoms = parameters.get("absorbing_atoms", [])
-        if not isinstance(atoms, list):
-            atoms = [atoms] if atoms else []
+        # Reconcile against site_* keys actually present in averaged_xas if available
+        active_site_indices: list[int] = []
+        if hasattr(node.outputs, "averaged_xas"):
+            active_site_indices = [
+                int(key.removeprefix("site_"))
+                for key in dir(node.outputs.averaged_xas)
+                if key.startswith("site_") and key.removeprefix("site_").isdigit()
+            ]
+        if active_site_indices:
+            atoms = sorted(active_site_indices)
+        else:
+            atoms = parameters.get("absorbing_atoms", [])
+            if not isinstance(atoms, list):
+                atoms = [atoms] if atoms else []
+            if not atoms and "absorbing_atom" in parameters:
+                atoms = [parameters["absorbing_atom"]]
         elements = sorted(
             {
                 _site_element(structure, index)
@@ -257,7 +281,7 @@ def _build_table_rows(records: list[dict], on_select: Callable[[int], None]) -> 
         layout={"padding": "4px 8px", "border_bottom": "1px solid #ddd"},
     )
     if not records:
-        return (header, ipw.HTML("<em>No matching successful workflows.</em>"))
+        return (header, ipw.HTML("<em>No matching completed workflows.</em>"))
 
     rows = [header]
     for record in records:

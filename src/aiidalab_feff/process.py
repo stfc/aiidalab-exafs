@@ -91,6 +91,10 @@ def build_workchain_builder(
     if workflow_model.is_batch():
         builder.batch_size = orm.Int(workflow_model.batch_size)
         builder.n_workers = orm.Int(workflow_model.n_workers)
+        if hasattr(builder, "clean_scratch"):
+            builder.clean_scratch = orm.Bool(workflow_model.clean_scratch)
+        if hasattr(builder, "stream_chunk_size") and workflow_model.stream_chunk_size is not None:
+            builder.stream_chunk_size = orm.Int(workflow_model.stream_chunk_size)
 
     return builder
 
@@ -294,7 +298,24 @@ class ProcessWidget(ipw.VBox):
 
         state = process_node.process_state
         if state == ProcessState.FINISHED:
-            self.status.success(f"Process {process_node.pk} finished.")
+            if process_node.is_finished_ok:
+                self.status.success(f"Process {process_node.pk} finished.")
+            elif hasattr(process_node.outputs, "averaged_xas"):
+                exit_msg = (
+                    getattr(process_node, "exit_message", None)
+                    or f"exit status {process_node.exit_status}"
+                )
+                self.status.warning(
+                    f"Process {process_node.pk} finished with warnings: {exit_msg}."
+                )
+            else:
+                exit_msg = (
+                    getattr(process_node, "exit_message", None)
+                    or f"exit status {process_node.exit_status}"
+                )
+                self.status.failure(f"Process {process_node.pk} failed: {exit_msg}.")
+                return
+
             try:
                 self._populate_results(process_node)
             except Exception as exc:  # noqa: BLE001
@@ -303,78 +324,21 @@ class ProcessWidget(ipw.VBox):
             if self.on_results_loaded is not None:
                 self.on_results_loaded()
         elif state == ProcessState.EXCEPTED:
-            self.status.failure(f"Process {process_node.pk} excepted.")
+            exit_msg = getattr(process_node, "exit_message", None) or "Process excepted."
+            self.status.failure(f"Process {process_node.pk} excepted: {exit_msg}")
         elif state == ProcessState.KILLED:
             self.status.failure(f"Process {process_node.pk} killed.")
 
     def _populate_results(self, process_node):
         outputs = process_node.outputs
         averaged_xas = {}
-        for key in dir(outputs.averaged_xas):
-            if key.startswith("site_") or key == "all":
-                averaged_xas[key] = getattr(outputs.averaged_xas, key)
+        if hasattr(outputs, "averaged_xas"):
+            for key in dir(outputs.averaged_xas):
+                if key.startswith("site_") or key == "all":
+                    averaged_xas[key] = getattr(outputs.averaged_xas, key)
 
-        # Build the per-(frame, site) XasData grid for subsampling/convergence
-        # by walking each FeffCalculation / FeffBatchCalculation child for its
-        # xas_data output. Only successful (finished_ok) children contribute.
-        # Missing pairs are simply absent.
-        xas_grid: dict[tuple[int, int], object] = {}
-        for child in process_node.called:
-            if not getattr(child, "is_finished_ok", False):
-                continue
-            proc_label = getattr(child, "process_label", None)
-            if proc_label == "FeffCalculation" and "xas_data" in child.outputs:
-                try:
-                    xas_grid[(child.inputs.frame_idx.value, child.inputs.site_idx.value)] = (
-                        child.outputs.xas_data
-                    )
-                except (KeyError, AttributeError):  # noqa: PERF203
-                    continue
-            elif proc_label == "FeffBatchCalculation" and hasattr(child.outputs, "xas_data"):
-                try:
-                    for snap_key in dir(child.outputs.xas_data):
-                        if snap_key.startswith("snap_"):
-                            parts = snap_key.split("_")
-                            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
-                                frame_idx = int(parts[1])
-                                site_idx = int(parts[2])
-                                xas_grid[(frame_idx, site_idx)] = getattr(
-                                    child.outputs.xas_data, snap_key
-                                )
-                except Exception:  # noqa: BLE001
-                    continue
-
-        # Extract absorber element + edge for plot titles/legends.
-        edge = ""
-        absorber_label = ""
-        try:
-            params = process_node.inputs.parameters.get_dict()
-            edge = str(params.get("edge", "")).upper()
-            atoms = params.get("absorbing_atoms", None) or []
-            if not isinstance(atoms, list):
-                atoms = [atoms] if atoms else []
-            # Resolve element symbol(s) from the first input structure.
-            if "trajectory" in process_node.inputs:
-                trajectory = process_node.inputs.trajectory
-                step_id = process_node.inputs.step_ids.get_list()[0]
-                frame_index = trajectory.get_index_from_stepid(step_id)
-                first_struct = trajectory.get_step_structure(frame_index)
-            else:
-                structures = process_node.inputs.structures
-                first_struct = next(iter(structures.values()))
-            from aiidalab_feff.utils import get_symbols
-
-            symbols = get_symbols(first_struct)
-            elements = sorted({symbols[i] for i in atoms if 0 <= i < len(symbols)})
-            n_sites = len(atoms)
-            if len(elements) == 1:
-                absorber_label = f"{elements[0]} ({n_sites} sites)" if n_sites > 1 else elements[0]
-            elif elements:
-                absorber_label = "/".join(elements)
-                if n_sites > 1:
-                    absorber_label += f" ({n_sites} sites)"
-        except Exception:  # noqa: BLE001
-            pass
+        xas_grid = _extract_xas_grid(process_node)
+        edge, absorber_label = _resolve_absorber_metadata(process_node, averaged_xas)
 
         # Set the grid + metadata BEFORE averaged_xas: the ResultsWidget observes
         # ``averaged_xas`` and its callback (_render → _populate_conv_selectors)
@@ -401,8 +365,102 @@ class ProcessWidget(ipw.VBox):
         self.submission_model.reset()
 
 
+def _extract_xas_grid(process_node) -> dict[tuple[int, int], object]:
+    """Build the per-(frame, site) XasData grid from workchain children."""
+    xas_grid: dict[tuple[int, int], object] = {}
+    for child in getattr(process_node, "called", []):
+        if not getattr(child, "is_finished_ok", False):
+            continue
+        proc_label = getattr(child, "process_label", None)
+        if proc_label == "FeffCalculation" and "xas_data" in child.outputs:
+            try:
+                xas_grid[(child.inputs.frame_idx.value, child.inputs.site_idx.value)] = (
+                    child.outputs.xas_data
+                )
+            except (KeyError, AttributeError):
+                continue
+        elif proc_label == "FeffBatchCalculation" and hasattr(child.outputs, "xas_data"):
+            try:
+                for snap_key in dir(child.outputs.xas_data):
+                    if not snap_key.startswith("snap_"):
+                        continue
+                    parts = snap_key.split("_")
+                    if (
+                        len(parts) == 4
+                        and parts[1].isdigit()
+                        and parts[2] == "site"
+                        and parts[3].isdigit()
+                    ):
+                        frame_idx = int(parts[1])
+                        site_idx = int(parts[3])
+                        xas_grid[(frame_idx, site_idx)] = getattr(
+                            child.outputs.xas_data, snap_key
+                        )
+                    elif len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                        frame_idx = int(parts[1])
+                        site_idx = int(parts[2])
+                        xas_grid[(frame_idx, site_idx)] = getattr(
+                            child.outputs.xas_data, snap_key
+                        )
+            except Exception:  # noqa: BLE001
+                continue
+    return xas_grid
+
+
+def _resolve_absorber_metadata(process_node, averaged_xas: dict) -> tuple[str, str]:
+    """Extract absorber element + edge for plot titles and legends."""
+    edge = ""
+    absorber_label = ""
+    try:
+        params = process_node.inputs.parameters.get_dict()
+        edge = str(params.get("edge", "")).upper()
+        active_sites = [
+            int(k.removeprefix("site_"))
+            for k in averaged_xas
+            if k.startswith("site_") and k.removeprefix("site_").isdigit()
+        ]
+        if active_sites:
+            atoms = sorted(active_sites)
+        else:
+            atoms = params.get("absorbing_atoms", None) or []
+            if not isinstance(atoms, list):
+                atoms = [atoms] if atoms else []
+            if not atoms and "absorbing_atom" in params:
+                atoms = [params["absorbing_atom"]]
+        # Resolve element symbol(s) from the first input structure.
+        if "trajectory" in process_node.inputs:
+            trajectory = process_node.inputs.trajectory
+            step_id = process_node.inputs.step_ids.get_list()[0]
+            frame_index = trajectory.get_index_from_stepid(step_id)
+            first_struct = trajectory.get_step_structure(frame_index)
+        else:
+            structures = process_node.inputs.structures
+            first_struct = next(iter(structures.values()))
+        from aiidalab_feff.utils import get_symbols
+
+        symbols = get_symbols(first_struct)
+        elements = sorted({symbols[i] for i in atoms if 0 <= i < len(symbols)})
+        n_sites = len(atoms)
+        if len(elements) == 1:
+            absorber_label = f"{elements[0]} ({n_sites} sites)" if n_sites > 1 else elements[0]
+        elif elements:
+            absorber_label = "/".join(elements)
+            if n_sites > 1:
+                absorber_label += f" ({n_sites} sites)"
+    except Exception:  # noqa: BLE001
+        pass
+    return edge, absorber_label
+
+
 def get_workchain_status(process_node) -> str:
     """Return a short status string for a process node."""
     if process_node is None:
         return "No process."
-    return f"PK {process_node.pk}: {process_node.process_state}"
+    status = f"PK {process_node.pk}: {process_node.process_state}"
+    is_terminated = getattr(process_node, "is_terminated", False)
+    exit_status = getattr(process_node, "exit_status", None)
+    if is_terminated and exit_status is not None:
+        status += f" [{exit_status}]"
+        if getattr(process_node, "exit_message", None):
+            status += f" — {process_node.exit_message}"
+    return status

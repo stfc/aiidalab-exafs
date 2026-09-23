@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import html
 from io import StringIO
 from typing import TypeGuard
 
@@ -454,9 +455,16 @@ class ResultsWidget(ipw.VBox):
         self._render_paths()
 
         if self.results_model.n_failed is not None and self.results_model.n_failed > 0:
+            proc_node = self.results_model.process_node
+            exit_msg = getattr(proc_node, "exit_message", None) if proc_node is not None else None
+            msg = (
+                f"Warning: {exit_msg}"
+                if exit_msg
+                else f"Warning: {self.results_model.n_failed} snapshot calculations failed."
+            )
             self.status.value = (
                 f"<span style='color: orange'>"
-                f"Warning: {self.results_model.n_failed} snapshot calculations failed."
+                f"{html.escape(msg)}"
                 f"</span>"
             )
 
