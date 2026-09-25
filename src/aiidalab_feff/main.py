@@ -6,7 +6,10 @@ import ipywidgets as ipw
 from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_feff.common.navigation import (
+    create_action_bar,
+    create_breadcrumbs,
     create_new_calculation_button,
+    update_breadcrumbs,
 )
 from aiidalab_feff.input import InputWidget
 from aiidalab_feff.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
@@ -14,17 +17,29 @@ from aiidalab_feff.process import ProcessWidget
 from aiidalab_feff.resources import ResourcesWidget
 from aiidalab_feff.results import ResultsWidget
 from aiidalab_feff.results_library import ResultsLibraryWidget
+from aiidalab_feff.styles import get_style_widget
 from aiidalab_feff.workflow import FeffParametersWidget
 
 
 class FeffApp(ipw.VBox):
-    """AiiDAlab FEFF app with a custom step wizard."""
+    """AiiDAlab FEFF app with a consolidated 5-step wizard and unified Runs browser."""
 
     STEP_INPUT = 0
-    STEP_WORKFLOW = 1
-    STEP_RESOURCES = 2
-    STEP_PROCESS = 3
+    STEP_SETTINGS = 1
+    STEP_REVIEW = 2
+    STEP_PROGRESS = 3
     STEP_RESULTS = 4
+
+    # Backward compatibility step aliases
+    STEP_WORKFLOW = STEP_SETTINGS
+    STEP_RESOURCES = STEP_REVIEW
+    STEP_PROCESS = STEP_PROGRESS
+
+    TAB_NEW = 0
+    TAB_RUNS = 1
+    # Backward compatibility tab aliases
+    TAB_RESULTS = 1
+    TAB_RUNNING = 1
 
     def __init__(self):
         self.input_model = InputModel()
@@ -34,14 +49,14 @@ class FeffApp(ipw.VBox):
 
         self.input_widget = InputWidget(self.input_model)
         self.workflow_widget = FeffParametersWidget(self.workflow_model, self.input_model)
-        self.resources_widget = ResourcesWidget(self.workflow_model)
+        self.resources_widget = ResourcesWidget(self.workflow_model, self.input_model)
         self.process_widget = ProcessWidget(
             self.input_model,
             self.workflow_model,
             self.submission_model,
             self.results_model,
-            on_process_loaded=lambda: self._go_to_step(self.STEP_PROCESS),
-            on_results_loaded=lambda: self._go_to_step(self.STEP_RESULTS),
+            on_process_loaded=lambda: self._go_to_step(self.STEP_PROGRESS),
+            on_results_loaded=self._on_results_loaded,
         )
         self.results_widget = ResultsWidget(self.results_model)
 
@@ -54,71 +69,99 @@ class FeffApp(ipw.VBox):
         ]
 
         self.step_titles = [
-            "1. Input structures",
-            "2. FEFF parameters",
-            "3. Resources",
-            "4. Submit / monitor",
+            "1. Structure",
+            "2. Settings",
+            "3. Review & run",
+            "4. Progress",
             "5. Results",
         ]
+        self.step_short_titles = [
+            "1 Structure",
+            "2 Settings",
+            "3 Review & run",
+            "4 Progress",
+            "5 Results",
+        ]
 
-        self.header = ipw.HTML("<h1>AiiDAlab FEFF — EXAFS / MD-EXAFS</h1>")
-        self.progress = ipw.HTML()
+        self.breadcrumbs, self._breadcrumb_buttons = create_breadcrumbs(
+            self.step_short_titles, self._on_breadcrumb
+        )
 
-        self.back_button = ipw.Button(description="Back", icon="arrow-left")
-        self.next_button = ipw.Button(
-            description="Next",
-            icon="arrow-right",
+        # G4 vocabulary: EXAFS from MD trajectories
+        self.header = ipw.HTML(
+            "<h1 style='margin: 0 0 8px 0; font-size: 22px; color: var(--feff-ink, #1F2933);'>"
+            "EXAFS from MD trajectories"
+            "</h1>"
+        )
+        self.progress = ipw.HTML()  # Kept for backward compatibility
+
+        # Action bar buttons (G2: single action bar at the bottom)
+        self.back_button_bottom = ipw.Button(description="Back", icon="arrow-left")
+        self.next_button_bottom = ipw.Button(
+            description="Next: Settings →",
             button_style="primary",
         )
-        self.back_button.on_click(self._on_back)
-        self.next_button.on_click(self._on_next)
+        self.back_button_bottom.on_click(self._on_back)
+        self.next_button_bottom.on_click(self._on_next)
 
-        self.new_button = create_new_calculation_button(self)
-        onclick_js = (
-            "window.open('http://' + window.location.hostname + ':2718', '_blank')"
-        )
-        nav_style_css = (
-            "display: inline-flex; align-items: center; justify-content: center; "
-            "height: 28px; padding: 0 10px; margin-left: 8px; text-decoration: none; "
-            "border: 1px solid #ccc; background-color: #f8f9fa; color: #333; "
-            "border-radius: 4px; font-weight: bold; font-size: 12px; cursor: pointer;"
-        )
-        self.marimo_link = ipw.HTML(
-            f'<a href="javascript:void(0)" onclick="{onclick_js}" style="{nav_style_css}" '
-            'title="Open Debye-Waller Marimo Notebook (Port 2718)">'
-            '⚡ Marimo DW Notebook ↗</a>'
+        # Aliases for backward compatibility
+        self.back_button = self.back_button_bottom
+        self.next_button = self.next_button_bottom
+        self.back_button_top = self.back_button_bottom
+        self.next_button_top = self.next_button_bottom
+
+        # Start over button
+        self.new_button_bottom = create_new_calculation_button(self)
+        self.new_button = self.new_button_bottom
+        self.new_button_top = self.new_button_bottom
+
+        self.action_bar = create_action_bar(
+            back_button=self.back_button_bottom,
+            primary_button=self.next_button_bottom,
+            start_over_button=self.new_button_bottom,
         )
 
-        self.nav_bar = ipw.HBox(
-            [
-                self.back_button,
-                self.next_button,
-                self.new_button,
-                self.marimo_link,
-            ]
-        )
+        # Keep for backward compatibility
+        self.top_nav_bar = ipw.HBox([], layout=ipw.Layout(display="none"))
+        self.bottom_nav_bar = self.action_bar
+        self.marimo_link = ipw.HTML()
 
         self.content = ipw.VBox()
         self.status = Status()
+
         self.new_calculation_view = ipw.VBox(
             [
-                self.progress,
-                self.nav_bar,
+                self.breadcrumbs,
                 self.status,
                 self.content,
-            ]
+                self.action_bar,
+            ],
+            layout=ipw.Layout(padding="4px 0"),
         )
-        self.results_library = ResultsLibraryWidget(self._open_saved_results)
+
+        # Merged Runs tab (Screen 5)
+        self.results_library = ResultsLibraryWidget(
+            on_open=self._open_saved_results,
+            on_refreshed=self._update_runs_tab_title,
+        )
+        self.running_tasks = self.results_library  # Backward compatibility alias
+
         self.app_tabs = ipw.Tab(children=[self.new_calculation_view, self.results_library])
-        self.app_tabs.set_title(0, "New calculation")
-        self.app_tabs.set_title(1, "Previous results")
+        self.app_tabs.set_title(self.TAB_NEW, "New calculation")
+        self.app_tabs.set_title(self.TAB_RUNS, "Runs")
+        self.app_tabs.observe(self._on_app_tab_changed, names="selected_index")
+
+        if self.results_library.last_count is not None:
+            self._update_runs_tab_title(self.results_library.last_count)
 
         super().__init__(
             [
+                get_style_widget(),
                 self.header,
                 self.app_tabs,
             ]
         )
+        self.add_class("feff-app")
 
         self._current_step = self.STEP_INPUT
         self._update_view()
@@ -134,6 +177,7 @@ class FeffApp(ipw.VBox):
         self.resources_widget.reset()
         self.process_widget.reset()
         self.results_widget.reset()
+        self.status.clear()
         self._current_step = self.STEP_INPUT
         self._update_view()
 
@@ -143,10 +187,40 @@ class FeffApp(ipw.VBox):
             self._update_view()
 
     def _open_saved_results(self, process_node):
-        """Load a selected completed workflow into the results view."""
+        """Load a selected completed workflow into the results view inside the same stepper."""
         self.reset()
-        self.app_tabs.selected_index = 0
+        self.app_tabs.selected_index = self.TAB_NEW
+        self.status.value = f"Loading results for Process {process_node.pk}..."
         self.submission_model.process_node = process_node
+        # If already terminated, populate results and go straight to results
+        if getattr(process_node, "is_terminated", False):
+            self.process_widget._on_finished(process_node)
+            self._go_to_step(self.STEP_RESULTS)
+        else:
+            self._go_to_step(self.STEP_PROGRESS)
+
+    def _open_running_workflow(self, process_node):
+        """Load a running workflow into the progress step."""
+        self.reset()
+        self.app_tabs.selected_index = self.TAB_NEW
+        self.submission_model.process_node = process_node
+        self._go_to_step(self.STEP_PROGRESS)
+
+    def _on_results_loaded(self):
+        """Called when workflow results finish loading into ResultsWidget."""
+        self.status.clear()
+        self._go_to_step(self.STEP_RESULTS)
+
+    def _on_app_tab_changed(self, change):
+        """Refresh the runs tab when it is selected."""
+        if change.get("new") == self.TAB_RUNS:
+            self.results_library.refresh()
+
+    def _update_runs_tab_title(self, count: int):
+        """Show active count in the Runs tab title if any are running."""
+        if hasattr(self, "app_tabs"):
+            title = f"Runs ({count})" if count else "Runs"
+            self.app_tabs.set_title(self.TAB_RUNS, title)
 
     def _go_to_step(self, step: int):
         """Jump to the given step if it is valid."""
@@ -154,57 +228,100 @@ class FeffApp(ipw.VBox):
             self._current_step = step
             self._update_view()
 
+    def _on_breadcrumb(self, index: int):
+        """Handle a breadcrumb click: free backward, validated forward jumps."""
+        if index == self._current_step:
+            return
+        if index < self._current_step:
+            self.status.clear()
+            self._go_to_step(index)
+            return
+        for step in range(self._current_step, index):
+            errors = self._validate_step(step)
+            if errors:
+                self.status.failure("<br>".join(f"• {e}" for e in errors))
+                return
+        self.status.clear()
+        self._go_to_step(index)
+
     def _on_next(self, _):
-        errors = self._validate_current_step()
+        errors = self._validate_step(self._current_step)
         if errors:
             self.status.failure("<br>".join(f"• {e}" for e in errors))
             return
         self.status.clear()
+
+        # Step 2: "Run calculation" triggers submission and advances to Progress
+        if self._current_step == self.STEP_REVIEW:
+            self.process_widget._on_submit(None)
+            if self.submission_model.process_node is not None:
+                self._current_step = self.STEP_PROGRESS
+                self._update_view()
+            return
+
+        # Step 3: Progress -> Results
+        if self._current_step == self.STEP_PROGRESS:
+            self._current_step = self.STEP_RESULTS
+            self._update_view()
+            return
+
         if self._current_step < len(self.steps) - 1:
             self._current_step += 1
             self._update_view()
 
-    def _validate_current_step(self) -> list[str]:
-        step = self._current_step
+    def _validate_step(self, step: int) -> list[str]:
         if step == self.STEP_INPUT:
             if not self.input_model.is_ensemble():
                 return ["Provide a structure or ensemble."]
             if not self.input_model.absorbing_atoms:
                 return ["Select at least one absorbing atom."]
             return []
-        if step == self.STEP_WORKFLOW:
+        if step == self.STEP_SETTINGS:
             return self.workflow_widget.validate()
-        if step == self.STEP_RESOURCES:
+        if step == self.STEP_REVIEW:
             return self.resources_widget.validate()
         return []
 
     def _update_view(self):
-        step = self._current_step + 1
-        title = self.step_titles[self._current_step]
-        self.progress.value = f"Step {step} of {len(self.steps)}: {title}"
         self.content.children = [self.steps[self._current_step]]
-        self.back_button.disabled = self._current_step == 0
-        self.next_button.disabled = self._current_step == len(self.steps) - 1
+        update_breadcrumbs(self._breadcrumb_buttons, self._current_step)
 
-        if self._current_step == self.STEP_WORKFLOW:
+        # Back button state
+        self.back_button_bottom.disabled = self._current_step == 0
+
+        # Primary button state and labels per step
+        if self._current_step == self.STEP_INPUT:
+            self.next_button_bottom.layout.display = "inline-block"
+            self.next_button_bottom.description = "Next: Settings →"
+            self.next_button_bottom.icon = "arrow-right"
+            self.next_button_bottom.disabled = False
+        elif self._current_step == self.STEP_SETTINGS:
             self.workflow_widget.input_model = self.input_model
-            dw = getattr(self.workflow_widget, "dw_screening", None)
-            if dw and not dw.absorber.value:
-                symbols = None
-                if self.input_model.trajectory is not None:
-                    symbols = getattr(self.input_model.trajectory, "symbols", None)
-                elif self.input_model.structure is not None:
-                    from aiidalab_feff.utils import get_symbols
-
-                    symbols = get_symbols(self.input_model.structure)
-                if symbols and self.input_model.absorbing_atoms:
-                    idx = self.input_model.absorbing_atoms[0]
-                    if 0 <= idx < len(symbols):
-                        dw.absorber.value = symbols[idx]
-
-        if self._current_step == self.STEP_PROCESS:
-            self.workflow_widget.get_parameters()  # ensure model.parameters is current
+            self.next_button_bottom.layout.display = "inline-block"
+            self.next_button_bottom.description = "Next: Review & run →"
+            self.next_button_bottom.icon = "arrow-right"
+            self.next_button_bottom.disabled = False
+        elif self._current_step == self.STEP_REVIEW:
+            self.workflow_widget.get_parameters()
             self.workflow_model.parameters = self.workflow_widget.get_parameters().get_dict()
+            self.resources_widget.input_model = self.input_model
+            self.resources_widget.update_review_card()
+            self.next_button_bottom.layout.display = "inline-block"
+            self.next_button_bottom.description = "Run calculation"
+            self.next_button_bottom.icon = "play"
+            self.next_button_bottom.disabled = False
+        elif self._current_step == self.STEP_PROGRESS:
+            node = self.submission_model.process_node
+            is_term = bool(getattr(node, "is_terminated", False))
+            if is_term:
+                self.next_button_bottom.layout.display = "inline-block"
+                self.next_button_bottom.description = "View results →"
+                self.next_button_bottom.icon = "bar-chart"
+                self.next_button_bottom.disabled = False
+            else:
+                self.next_button_bottom.layout.display = "none"
+        elif self._current_step == self.STEP_RESULTS:
+            self.next_button_bottom.layout.display = "none"
 
 
 def main():

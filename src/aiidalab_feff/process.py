@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import datetime
+import logging
+from urllib.parse import quote
+
 import ipywidgets as ipw
 from aiida import engine, orm
 from aiida.engine import ProcessState
 from aiida_feff.workflows.ensemble import EnsembleExafsWorkChain
+from alc_aiidalab_widgets.widgets.loading import LoadingWidget
+from alc_aiidalab_widgets.widgets.process_node_view import ProcessNodeViewerWidget
 from alc_aiidalab_widgets.widgets.status import Status
+from IPython.display import Javascript, display
 
 from aiidalab_feff.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
+from aiidalab_feff.running_tasks import (
+    _aggregate_jobs,
+    _collect_jobs,
+    _estimate_expected_calculations,
+    _progress_bar_html,
+)
+
+logger = logging.getLogger(__name__)
 
 #: How long the background monitor keeps polling a submitted process before giving up.
 _MONITOR_TIMEOUT_SECONDS = 300.0
@@ -17,6 +32,38 @@ _MONITOR_TIMEOUT_SECONDS = 300.0
 #: The loop is blocked while a cell executes, so a missed poll is normal; we skip it
 #: rather than parking the thread until the kernel next goes idle.
 _MONITOR_CALLBACK_TIMEOUT_SECONDS = 10.0
+
+
+def _format_duration(seconds: float) -> str:
+    """Format duration in seconds into human-readable string."""
+    seconds = int(max(0, seconds))
+    mins, secs = divmod(seconds, 60)
+    hours, mins = divmod(mins, 60)
+    if hours > 0:
+        return f"{hours}h {mins}m {secs}s"
+    if mins > 0:
+        return f"{mins}m {secs}s"
+    return f"{secs}s"
+
+
+def _plain_state_info(process_node) -> tuple[str, str]:
+    """Return plain English status and badge class for a process node."""
+    if process_node is None:
+        return "Not started", "feff-badge"
+    state = getattr(process_node, "process_state", None)
+    val = getattr(state, "value", str(state)).lower() if state else ""
+    if val == "finished":
+        if getattr(process_node, "is_finished_ok", False):
+            return "Finished", "feff-badge feff-badge-done"
+        return "Finished with warnings", "feff-badge feff-badge-failed"
+    mapping = {
+        "created": ("Queued", "feff-badge feff-badge-running"),
+        "running": ("Running", "feff-badge feff-badge-running"),
+        "waiting": ("Running", "feff-badge feff-badge-running"),
+        "excepted": ("Failed", "feff-badge feff-badge-failed"),
+        "killed": ("Cancelled", "feff-badge feff-badge-failed"),
+    }
+    return mapping.get(val, ("Running", "feff-badge feff-badge-running"))
 
 
 def build_workchain_builder(
@@ -96,6 +143,9 @@ def build_workchain_builder(
         if hasattr(builder, "stream_chunk_size") and workflow_model.stream_chunk_size is not None:
             builder.stream_chunk_size = orm.Int(workflow_model.stream_chunk_size)
 
+    if getattr(workflow_model, "label", None):
+        builder.metadata.label = workflow_model.label
+
     return builder
 
 
@@ -118,54 +168,165 @@ class ProcessWidget(ipw.VBox):
         self.on_process_loaded = on_process_loaded
         self.on_results_loaded = on_results_loaded
 
-        self.header = ipw.HTML("<h2>Submit and monitor</h2>")
+        self.header = ipw.HTML("<h2>Calculation progress</h2>")
+        self.progress_panel = ipw.HTML()
+        self.progress_panel.add_class("feff-card")
+
         self.submit_button = ipw.Button(
-            description="Submit",
-            button_style="success",
-            icon="paper-plane",
+            description="Run calculation",
+            button_style="primary",
+            icon="play",
+            layout={"min_width": "150px"},
         )
+        self.submit_button.add_class("feff-btn-primary")
         self.submit_button.on_click(self._on_submit)
 
         self.explorer_button = ipw.Button(
-            description="Open in aiida-explorer",
-            button_style="info",
+            description="Open provenance (AiiDA)",
             icon="external-link",
-            layout={"display": "none"},
+            layout={"display": "none", "min_width": "190px"},
         )
+        self.explorer_button.add_class("feff-btn-secondary")
         self.explorer_button.on_click(self._on_open_explorer)
+
+        self.view_results_button = ipw.Button(
+            description="View results",
+            button_style="primary",
+            icon="bar-chart",
+            disabled=True,
+            layout={"display": "none", "min_width": "140px"},
+        )
+        self.view_results_button.add_class("feff-btn-primary")
+        self.view_results_button.on_click(self._on_view_results_click)
 
         self.status = Status()
         self.monitor_output = ipw.Output()
 
+        self.details_accordion = ipw.Accordion(children=[self.monitor_output])
+        self.details_accordion.set_title(0, "AiiDA process details (troubleshooting)")
+        self.details_accordion.selected_index = None
+
+        action_row = ipw.HBox(
+            [self.explorer_button, self.view_results_button],
+            layout=ipw.Layout(grid_gap="12px", align_items="center", margin="12px 0"),
+        )
+
         super().__init__(
             [
                 self.header,
-                ipw.HBox([self.submit_button, self.explorer_button]),
+                self.progress_panel,
+                action_row,
                 self.status,
-                self.monitor_output,
+                self.details_accordion,
             ]
         )
 
         self.submission_model.observe(self._on_process_node_change, names="process_node")
 
+    def _render_process_view(self, process_node):
+        """Render human-readable progress panel and background details."""
+        if process_node is None:
+            self.progress_panel.value = "<em>No calculation active.</em>"
+            return
+
+        label = getattr(process_node, "label", "") or "EXAFS calculation"
+        pk = getattr(process_node, "pk", "")
+        status_text, badge_class = _plain_state_info(process_node)
+
+        # Child jobs progress
+        agg = _aggregate_jobs(_collect_jobs(process_node))
+        expected = _estimate_expected_calculations(process_node)
+        total = expected if expected else max(agg["done"] + agg["failed"] + agg["pending"], 1)
+
+        # Duration
+        ctime = getattr(process_node, "ctime", None)
+        mtime = getattr(process_node, "mtime", None)
+        is_term = bool(getattr(process_node, "is_terminated", False))
+        if ctime is not None:
+            end_time = (
+                mtime if (is_term and mtime) else datetime.datetime.now(datetime.timezone.utc)
+            )
+            if ctime.tzinfo is not None and end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=datetime.timezone.utc)
+            elif ctime.tzinfo is None and end_time.tzinfo is not None:
+                end_time = end_time.replace(tzinfo=None)
+            elapsed_sec = max(0, (end_time - ctime).total_seconds())
+            duration_str = _format_duration(elapsed_sec)
+        else:
+            duration_str = "—"
+
+        bar_html = _progress_bar_html(agg["done"], agg["failed"], total)
+
+        finish_banner = ""
+        if is_term:
+            if getattr(process_node, "is_finished_ok", False):
+                finish_banner = (
+                    "<div style='margin-top:12px;padding:8px 12px;background:#e8f5e9;border-radius:4px;color:#1b5e20;font-weight:600;'>"
+                    "✓ Calculation complete! Click <strong>View results</strong> below to analyze spectra."
+                    "</div>"
+                )
+            self.view_results_button.layout.display = "inline-block"
+            self.view_results_button.disabled = False
+        else:
+            self.view_results_button.layout.display = "none"
+
+        self.progress_panel.value = (
+            "<div style='background:var(--feff-surface, #F4F6F8);border:1px solid var(--feff-rule, #D5DBE1);"
+            "border-radius:6px;padding:16px;margin:8px 0;'>"
+            "<div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;'>"
+            f"<div><h3 style='margin:0;font-size:16px;color:var(--feff-ink, #1F2933);'>{label}</h3>"
+            f"<span style='font-size:12px;color:var(--feff-ink-muted, #666);'>Run #{pk}</span></div>"
+            f"<div><span class='{badge_class}' style='font-size:13px;padding:4px 10px;'>{status_text}</span></div>"
+            "</div>"
+            f"<div style='margin:10px 0;'>{bar_html}</div>"
+            "<div style='display:flex;justify-content:space-between;font-size:13px;color:var(--feff-ink-muted, #555);flex-wrap:wrap;gap:8px;'>"
+            f"<div><strong>{agg['done']}</strong> of <strong>{total}</strong> frames complete "
+            f"({agg['failed']} failed)</div>"
+            f"<div>Elapsed: <strong>{duration_str}</strong></div>"
+            "</div>"
+            f"{finish_banner}"
+            "</div>"
+        )
+
+        with self.monitor_output:
+            self.monitor_output.clear_output()
+            try:
+                display(ProcessNodeViewerWidget(process_node))
+            except Exception:
+                print(f"Process {pk}: {status_text}")
+
+    def _on_view_results_click(self, _):
+        if self.on_results_loaded is not None:
+            self.on_results_loaded()
+
     def _on_submit(self, _):
+        self.submit_button.disabled = True
+        self.submit_button.description = "Submitting..."
         self.monitor_output.clear_output()
         try:
             builder = build_workchain_builder(self.input_model, self.workflow_model)
         except ValueError as exc:
             self.status.failure(str(exc))
+            self.submit_button.disabled = False
+            self.submit_button.description = "Run calculation"
             return
 
+        with self.monitor_output:
+            self.monitor_output.clear_output()
+            display(LoadingWidget(message="Submitting workflow..."))
         self.status.value = "Submitting..."
         try:
             process_node = engine.submit(builder)
         except Exception as exc:  # noqa: BLE001
+            self.monitor_output.clear_output()
             self.status.failure(f"Submission failed: {exc}")
+            self.submit_button.disabled = False
+            self.submit_button.description = "Run calculation"
             return
 
         self.submission_model.process_node = process_node
-        self.status.success(f"Submitted {process_node.pk}.")
-        self.explorer_button.layout.display = "block"
+        self.status.success("Calculation started.")
+        self.explorer_button.layout.display = "inline-block"
         self._monitor_process()
 
     AIIDA_EXPLORER_REST_API_URL = "http://localhost:5050/api/v4"
@@ -173,10 +334,6 @@ class ProcessWidget(ipw.VBox):
 
     def _open_aiida_explorer(self, uuid: str):
         """Open the node in the hosted aiida-explorer app in a new tab."""
-        from urllib.parse import quote
-
-        from IPython.display import Javascript, display
-
         api_url = quote(self.AIIDA_EXPLORER_REST_API_URL, safe="")
         query = f"api_url={api_url}&uuid={uuid}"
         url = f"{self.AIIDA_EXPLORER_APP_URL}?{query}"
@@ -216,9 +373,7 @@ class ProcessWidget(ipw.VBox):
         process_node = orm.load_node(process_node.pk)
         self.submission_model.process_node = process_node
 
-        with self.monitor_output:
-            self.monitor_output.clear_output()
-            print(f"Process {process_node.pk}: {process_node.process_state}")  # type: ignore[attr-defined]
+        self._render_process_view(process_node)
 
         if process_node.is_terminated:  # type: ignore[attr-defined]
             self._on_finished(process_node)
@@ -262,9 +417,7 @@ class ProcessWidget(ipw.VBox):
                         # Reload fresh from the DB each iteration (see note above).
                         fresh = orm.load_node(current.pk)
                         self.submission_model.process_node = fresh
-                        with self.monitor_output:
-                            self.monitor_output.clear_output()
-                            print(f"Process {fresh.pk}: {fresh.process_state}")  # type: ignore[attr-defined]
+                        self._render_process_view(fresh)
                         outcome["terminated"] = bool(fresh.is_terminated)  # type: ignore[attr-defined]
                     finally:
                         done.set()
@@ -280,9 +433,7 @@ class ProcessWidget(ipw.VBox):
                     break
 
             # Re-read the node on the loop rather than handing one across threads.
-            loop.call_soon_threadsafe(
-                lambda: self._on_finished(self.submission_model.process_node)
-            )
+            loop.call_soon_threadsafe(lambda: self._on_finished(self.submission_model.process_node))
 
         thread = threading.Thread(target=_poll, daemon=True, name="feff-process-monitor")
         thread.start()
@@ -295,6 +446,8 @@ class ProcessWidget(ipw.VBox):
             process_node = orm.load_node(process_node.pk)
         if not process_node.is_terminated:
             return
+
+        self._render_process_view(process_node)
 
         state = process_node.process_state
         if state == ProcessState.FINISHED:
@@ -347,12 +500,16 @@ class ProcessWidget(ipw.VBox):
         self.results_model.edge = edge
         self.results_model.absorber_label = absorber_label
         self.results_model.is_ensemble = (
-            len(self.input_model.selected_indices or []) > 1
-            if self.input_model.trajectory is not None
-            else len(self.input_model.get_structures() or {}) > 1
+            hasattr(process_node.inputs, "trajectory")
+            or hasattr(process_node.inputs, "structures")
+            or (
+                len(self.input_model.selected_indices or []) > 1
+                if self.input_model.trajectory is not None
+                else len(self.input_model.get_structures() or {}) > 1
+            )
         )
         self.results_model.process_node = process_node
-        self.results_model.n_failed = outputs.n_failed.value
+        self.results_model.n_failed = outputs.n_failed.value if hasattr(outputs, "n_failed") else 0
         if hasattr(outputs, "path_contributions"):
             self.results_model.path_contributions = outputs.path_contributions
         if hasattr(outputs, "archive"):
@@ -368,6 +525,37 @@ class ProcessWidget(ipw.VBox):
 def _extract_xas_grid(process_node) -> dict[tuple[int, int], object]:
     """Build the per-(frame, site) XasData grid from workchain children."""
     xas_grid: dict[tuple[int, int], object] = {}
+    if not hasattr(process_node, "pk") or process_node.pk is None:
+        return xas_grid
+
+    # Fast path: QueryBuilder retrieves all child XasData outputs in a single SQL query
+    try:
+        from aiida_feff.data.xasdata import XasData
+
+        qb = orm.QueryBuilder()
+        qb.append(orm.WorkChainNode, filters={"pk": process_node.pk}, tag="wc")
+        qb.append(orm.ProcessNode, with_incoming="wc", tag="calc")
+        qb.append(
+            XasData,
+            with_incoming="calc",
+            edge_project=["label"],
+            project=["attributes.frame_index", "attributes.site_index", "*"],
+        )
+        for f, s, node, lbl in qb.all():
+            if f is not None and s is not None:
+                xas_grid[(int(f), int(s))] = node
+            elif lbl and lbl.startswith("snap_"):
+                parts = lbl.split("_")
+                if len(parts) >= 4 and parts[1].isdigit() and parts[3].isdigit():
+                    xas_grid[(int(parts[1]), int(parts[3]))] = node
+                elif len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
+                    xas_grid[(int(parts[1]), int(parts[2]))] = node
+        if xas_grid:
+            return xas_grid
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Fast xas_grid QueryBuilder query failed; falling back: %s", exc)
+
+    # Fallback traversal if QueryBuilder matched nothing
     for child in getattr(process_node, "called", []):
         if not getattr(child, "is_finished_ok", False):
             continue
@@ -393,15 +581,11 @@ def _extract_xas_grid(process_node) -> dict[tuple[int, int], object]:
                     ):
                         frame_idx = int(parts[1])
                         site_idx = int(parts[3])
-                        xas_grid[(frame_idx, site_idx)] = getattr(
-                            child.outputs.xas_data, snap_key
-                        )
+                        xas_grid[(frame_idx, site_idx)] = getattr(child.outputs.xas_data, snap_key)
                     elif len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
                         frame_idx = int(parts[1])
                         site_idx = int(parts[2])
-                        xas_grid[(frame_idx, site_idx)] = getattr(
-                            child.outputs.xas_data, snap_key
-                        )
+                        xas_grid[(frame_idx, site_idx)] = getattr(child.outputs.xas_data, snap_key)
             except Exception:  # noqa: BLE001
                 continue
     return xas_grid

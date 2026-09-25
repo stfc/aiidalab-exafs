@@ -40,6 +40,7 @@ dependencies = [
     # REST API for the aiida-explorer button
     "flask-cors",
     "flask-restful",
+    "ipydatagrid>=1.4.0",
 ]
 
 [project.optional-dependencies]
@@ -106,14 +107,17 @@ max-branches = 24
 max-statements = 100
 
 [tool.ruff.lint.per-file-ignores]
+"src/aiidalab_feff/absorber.py" = ["D107", "D102"]
+"src/aiidalab_feff/experimental.py" = ["D107", "D102"]
 "src/aiidalab_feff/input.py" = ["D107", "D102"]
 "src/aiidalab_feff/main.py" = ["D107", "D102"]
 "src/aiidalab_feff/process.py" = ["D107", "D102"]
 "src/aiidalab_feff/resources.py" = ["D107", "D102"]
 "src/aiidalab_feff/results.py" = ["D107", "D102"]
+"src/aiidalab_feff/running_tasks.py" = ["D107", "D102"]
 "src/aiidalab_feff/widgets/paths_explorer.py" = ["D107", "D102"]
 "src/aiidalab_feff/workflow.py" = ["D107", "D102"]
-"notebooks/*.py" = ["F841", "B018", "E501", "BLE001", "S110", "D", "N803", "PLR0913", "PLR1711", "PLR5501"]
+"notebooks/*.py" = ["F841", "B018", "E501", "BLE001", "S110", "D", "N803", "PLR0912", "PLR0913", "PLR1711", "PLR5501"]
 "tests/**/*.py" = ["D", "N806", "PLC0415", "B017", "E501", "PLR2004"]
 
 [tool.ruff.lint.pydocstyle]

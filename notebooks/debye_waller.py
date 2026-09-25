@@ -465,9 +465,7 @@ def _(kabsch_align, logger, mo, no_align, structures, unwrap_positions_pbc):
             logger.info("Kabsch alignment skipped.")
 
         _status = mo.callout(
-            mo.md(
-                f"✅ Trajectory processed · Shape: `{unwrapped.shape}` (frames × atoms × xyz)"
-            ),
+            mo.md(f"✅ Trajectory processed · Shape: `{unwrapped.shape}` (frames × atoms × xyz)"),
             kind="success",
         )
 
@@ -621,18 +619,14 @@ def _(alt, atomic_numbers, jmol_colors, mo, np, pd, results):
                 color=alt.Color("Element:N", scale=_el_color_scale),
                 tooltip=[
                     alt.Tooltip("Element:N", title="Element"),
-                    alt.Tooltip(
-                        "mean(B-factor (Å²)):Q", format=".4f", title="Mean B (Å²)"
-                    ),
+                    alt.Tooltip("mean(B-factor (Å²)):Q", format=".4f", title="Mean B (Å²)"),
                 ],
             )
         )
 
         _plot = (
             alt.layer(_mean_lines, _pts)
-            .properties(
-                height=300, width="container", title="Debye-Waller factors per atom"
-            )
+            .properties(height=300, width="container", title="Debye-Waller factors per atom")
             .interactive()
         )
 
@@ -747,17 +741,10 @@ def _(
     msrd_df = None
     msrd_path_indices = None
 
-    if (
-        run_msrd.value
-        and structures is not None
-        and unwrapped is not None
-        and results is not None
-    ):
+    if run_msrd.value and structures is not None and unwrapped is not None and results is not None:
         _spec = element_spec.value.strip()
         if not _spec:
-            _msrd_ui = mo.callout(
-                mo.md("⚠️ Please enter a site specification."), kind="warn"
-            )
+            _msrd_ui = mo.callout(mo.md("⚠️ Please enter a site specification."), kind="warn")
         else:
             _symbols = structures[0].get_chemical_symbols()
             try:
@@ -865,9 +852,7 @@ def _(
                         if _warnings
                         else mo.md(""),
                         mo.md("### 2-Body Paths"),
-                        mo.ui.table(_rows2b)
-                        if _rows2b
-                        else mo.md("_No 2-body paths found._"),
+                        mo.ui.table(_rows2b) if _rows2b else mo.md("_No 2-body paths found._"),
                         mo.md("### 3-Body Paths"),
                         mo.ui.table(_rows3b)
                         if _rows3b
@@ -889,6 +874,7 @@ def _(alt, atomic_numbers, jmol_colors, mo, msrd_df):
     msrd_chart = None
 
     if msrd_df is not None:
+
         def _jmol_hex(sym):
             z = atomic_numbers.get(sym, 0)
             r, g, b = jmol_colors[z]
@@ -907,9 +893,7 @@ def _(alt, atomic_numbers, jmol_colors, mo, msrd_df):
             shape=alt.Shape(
                 "Body:N",
                 title="Body",
-                scale=alt.Scale(
-                    domain=["2-body", "3-body"], range=["circle", "triangle-up"]
-                ),
+                scale=alt.Scale(domain=["2-body", "3-body"], range=["circle", "triangle-up"]),
             ),
             size=alt.value(60),
             opacity=alt.value(0.75),
@@ -995,9 +979,7 @@ def _(avg_atoms, find_mic, mo, msrd_chart, msrd_path_indices, np, results):
                 _row["n2 element"] = _syms[_n2]
                 _row["n2 dist (Å)"] = f"{_d_ret:.4f}"
                 _row["n1→n2 dist (Å)"] = f"{_d12:.4f}"
-                _row["n1→n2 vector (Å)"] = (
-                    f"({_v12[0]:.3f}, {_v12[1]:.3f}, {_v12[2]:.3f})"
-                )
+                _row["n1→n2 vector (Å)"] = f"({_v12[0]:.3f}, {_v12[1]:.3f}, {_v12[2]:.3f})"
 
                 _e1 = {
                     "from_idx": _c,
@@ -1036,9 +1018,7 @@ def _(avg_atoms, find_mic, mo, msrd_chart, msrd_path_indices, np, results):
                     _row[f"{_label} idx"] = _n
                     _row[f"{_label} element"] = _syms[_n]
                     _row[f"{_label} dist (Å)"] = f"{_d:.4f}"
-                    _row[f"{_label} vector (Å)"] = (
-                        f"({_v[0]:.3f}, {_v[1]:.3f}, {_v[2]:.3f})"
-                    )
+                    _row[f"{_label} vector (Å)"] = f"({_v[0]:.3f}, {_v[1]:.3f}, {_v[2]:.3f})"
                     _entry = {
                         "from_idx": _c,
                         "to_idx": _n,
@@ -1089,11 +1069,7 @@ def _(avg_atoms, find_mic, mo, msrd_chart, msrd_path_indices, np, results):
 
 @app.cell
 def _(mo, selected_path_info):
-    _n = (
-        len(selected_path_info["path_instances"])
-        if selected_path_info is not None
-        else 1
-    )
+    _n = len(selected_path_info["path_instances"]) if selected_path_info is not None else 1
     show_all_paths = mo.ui.checkbox(label="Show all equivalent paths", value=False)
     path_index_slider = mo.ui.slider(
         start=0,
@@ -1152,9 +1128,7 @@ def _(
                         "radius": 0.12,
                     }
                 _vf_groups[_key]["origins"].append(
-                    _v["origin"].tolist()
-                    if "origin" in _v
-                    else _pos[_v["from_idx"]].tolist()
+                    _v["origin"].tolist() if "origin" in _v else _pos[_v["from_idx"]].tolist()
                 )
                 _vf_groups[_key]["vectors"].append(np.array(_v["vector"]).tolist())
                 _highlight.add(_v["from_idx"])

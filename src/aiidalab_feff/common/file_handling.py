@@ -38,15 +38,18 @@ def read_cif_xyz_to_structure_data(file_content: bytes, filename: str) -> Struct
     """
     text = file_content.decode("utf-8", errors="ignore")
     fmt = _guess_ase_format(file_content, filename)
+    stream = StringIO(text)
+    stream.name = filename
     try:
-        # Try reading with the format first, or fall back to auto-detection
-        atoms = ase_read(StringIO(text), format=fmt)
-    except Exception:
+        # Let ASE detect the format (e.g. extxyz for .xyz), falling back to plain xyz
+        atoms = ase_read(stream, format=fmt)
+    except Exception as orig_exc:
         try:
-            atoms = ase_read(StringIO(text))
-        except Exception as exc:
-            msg = f"Could not parse file '{filename}' with ASE: {exc}"
-            raise ValueError(msg) from exc
+            stream.seek(0)
+            atoms = ase_read(stream, format="xyz")
+        except Exception:
+            msg = f"Could not parse file '{filename}' with ASE: {orig_exc}"
+            raise ValueError(msg) from orig_exc
 
     if isinstance(atoms, list):
         atoms = atoms[0]
@@ -58,14 +61,17 @@ def read_xyz_to_trajectory_data(file_content: bytes, filename: str) -> Trajector
     """Read a multi-frame file and return an AiiDA TrajectoryData node."""
     text = file_content.decode("utf-8", errors="ignore")
     fmt = _guess_ase_format(file_content, filename)
+    stream = StringIO(text)
+    stream.name = filename
     try:
-        atoms_list = ase_read(StringIO(text), index=":", format=fmt)
-    except Exception:
+        atoms_list = ase_read(stream, index=":", format=fmt)
+    except Exception as orig_exc:
         try:
-            atoms_list = ase_read(StringIO(text), index=":")
-        except Exception as exc:
-            msg = f"Could not parse trajectory file '{filename}' with ASE: {exc}"
-            raise ValueError(msg) from exc
+            stream.seek(0)
+            atoms_list = ase_read(stream, index=":", format="xyz")
+        except Exception:
+            msg = f"Could not parse trajectory file '{filename}' with ASE: {orig_exc}"
+            raise ValueError(msg) from orig_exc
 
     if not isinstance(atoms_list, list) or len(atoms_list) == 0:
         msg = f"File {filename} did not contain multiple frames."
@@ -107,11 +113,11 @@ def _sanitise_key(stem: str) -> str:
     return "".join(c if c.isalnum() or c in "_-" else "_" for c in stem).rstrip("_")
 
 
-def _guess_ase_format(file_content: bytes, filename: str) -> str:
+def _guess_ase_format(file_content: bytes, filename: str) -> str | None:
     """Return an ASE format, including header-based LAMMPS dump detection."""
     if b"ITEM: TIMESTEP" in file_content[:4096]:
         return "lammps-dump-text"
-    return Path(filename).suffix.lstrip(".").lower()
+    return None
 
 
 def ase_atoms_list_to_trajectory_data(atoms_list: list[ase.Atoms]) -> TrajectoryData:

@@ -97,9 +97,7 @@ async def main(container: str | None, bind: str) -> None:
     servers = []
     for host_port, container_port in PORT_MAP:
         servers.append(
-            await asyncio.start_server(
-                create_forwarder(target_ip, container_port), bind, host_port
-            )
+            await asyncio.start_server(create_forwarder(target_ip, container_port), bind, host_port)
         )
         print(f"proxy: {bind}:{host_port} -> {target_ip}:{container_port}")
 

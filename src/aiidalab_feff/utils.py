@@ -11,8 +11,7 @@ def get_trajectory_size_mb(trajectory: TrajectoryData) -> float:
     if not object_names:
         return 0.0
     sizes = [
-        len(trajectory.base.repository.get_object_content(name, mode="rb"))
-        for name in object_names
+        len(trajectory.base.repository.get_object_content(name, mode="rb")) for name in object_names
     ]
     return max(sizes) / (1024 * 1024)
 

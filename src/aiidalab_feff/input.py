@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from html import escape
-from typing import cast
 
 import ipywidgets as ipw
 from aiida.orm import StructureData, TrajectoryData
 from alc_aiidalab_widgets.widgets.database import AiiDADatabaseQueryWidget
 from alc_aiidalab_widgets.widgets.status import Status
+from alc_aiidalab_widgets.widgets.structure import StructureViewWidget
 
 from aiidalab_feff.absorber import AbsorberSelectorWidget
 from aiidalab_feff.common.file_handling import (
@@ -36,12 +36,14 @@ class StructureInputWidget(ipw.VBox):
         self.file_upload.observe(self._on_upload, names="value")
 
         self.status = Status()
+        self.viewer = StructureViewWidget()
 
         super().__init__(
             [
                 ipw.HTML("<h3>Upload a single structure</h3>"),
                 self.file_upload,
                 self.status,
+                self.viewer,
             ]
         )
 
@@ -59,6 +61,7 @@ class StructureInputWidget(ipw.VBox):
         try:
             structure = read_cif_xyz_to_structure_data(content, filename)
             self.model.structure = structure
+            self.viewer.assign_structure_from_structuredata(structure)
             self.status.success(f"Loaded {filename} ({len(structure.sites)} atoms).")
         except Exception as exc:  # noqa: BLE001
             self.status.value = _upload_error_message(filename, "structure", exc)
@@ -68,18 +71,22 @@ class StructureInputWidget(ipw.VBox):
         self.file_upload.value = () if isinstance(self.file_upload.value, tuple) else {}
         self.status.clear()
         self.model.structure = None
+        self.viewer.children = [self.viewer.message]
+
+
+def _ordinal(n: int) -> str:
+    """Return the ordinal suffix for an integer (e.g. 1st, 2nd, 3rd, 10th)."""
+    if 11 <= (n % 100) <= 13:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
 class TrajectoryInputWidget(ipw.VBox):
-    """Trajectory upload with stride / index sampling.
-
-    TODO: trajectory UX — pass the full list of snapshot structures (or the
-    TrajectoryData itself) to a weas-widget visualiser so the user can inspect
-    frames while choosing stride/indices.
-    """
+    """Trajectory upload with stride / index sampling."""
 
     def __init__(self, model: InputModel):
         self.model = model
+        self.filename = ""
 
         self.file_upload = ipw.FileUpload(
             multiple=False,
@@ -88,36 +95,76 @@ class TrajectoryInputWidget(ipw.VBox):
         )
         self.file_upload.observe(self._on_upload, names="value")
 
+        self.subsample_mode = ipw.ToggleButtons(
+            options=[("Every Nth frame", "stride"), ("Custom index range", "custom")],
+            value="stride",
+            description="Frames to use:",
+            style={"description_width": "initial", "button_width": "auto"},
+            layout={"margin": "6px 0 4px 0"},
+        )
+        self.subsample_mode.observe(self._on_subsample_mode_change, names="value")
+
         self.stride = ipw.IntSlider(
-            value=1,
+            value=10,
             min=1,
             max=100,
             step=1,
             description="Stride:",
             continuous_update=False,
+            style={"description_width": "initial"},
+            layout={"width": "320px"},
         )
         self.stride.observe(self._on_stride_change, names="value")
 
         self.indices_text = ipw.Text(
             value="",
-            placeholder="e.g. 0,10,20 or 0:100:10",
+            placeholder="e.g. 0:100:10 or 0, 10, 20, 30",
             description="Indices:",
-            layout={"width": "300px"},
+            style={"description_width": "initial"},
+            layout={"width": "340px", "display": "none"},
         )
         self.indices_text.observe(self._on_indices_change, names="value")
 
+        self.decorrelation_note = ipw.HTML(
+            "<div style='font-size:12px;color:var(--feff-ink-muted, #52606D);margin-top:2px;'>"
+            "Subsampling MD frames avoids calculating statistically correlated configurations and saves compute time."
+            "</div>"
+        )
+
         self.frame_count = ipw.HTML()
         self.status = Status()
+        self.viewer = StructureViewWidget()
+
+        sampling_box = ipw.VBox(
+            [
+                self.subsample_mode,
+                ipw.HBox([self.stride, self.indices_text]),
+                self.decorrelation_note,
+            ],
+            layout=ipw.Layout(margin="4px 0 8px 0"),
+        )
 
         super().__init__(
             [
                 ipw.HTML("<h3>Upload an MD trajectory</h3>"),
                 self.file_upload,
-                ipw.HBox([self.stride, self.indices_text]),
+                sampling_box,
                 self.frame_count,
                 self.status,
+                self.viewer,
             ]
         )
+
+    def _on_subsample_mode_change(self, change):
+        if change["new"] == "stride":
+            self.stride.layout.display = "block"
+            self.indices_text.layout.display = "none"
+            self._update_indices()
+        else:
+            self.stride.layout.display = "none"
+            self.indices_text.layout.display = "block"
+            if self.indices_text.value.strip():
+                self._update_indices_from_text(self.indices_text.value)
 
     def _on_upload(self, change):
         if not change["new"]:
@@ -130,31 +177,34 @@ class TrajectoryInputWidget(ipw.VBox):
         else:
             filename = next(iter(change["new"].keys()))
             content = bytes(change["new"][filename]["content"])
+        self.filename = filename
         try:
             trajectory = read_xyz_to_trajectory_data(content, filename)
             validate_trajectory_size(trajectory)
             self.model.trajectory = trajectory
+            self.viewer.assign_structure_from_trajectorydata(trajectory)
             self._update_indices()
-            self.status.success(f"Loaded {filename} with {len(trajectory.get_stepids())} frames.")
+            self.status.clear()
         except Exception as exc:  # noqa: BLE001
             self.status.value = _upload_error_message(filename, "trajectory", exc)
             self.model.trajectory = None
             self.model.selected_indices = None
             self.model.structures = {}
-            self.frame_count.value = "Selected frames: 0"
+            self.frame_count.value = ""
 
     def _on_stride_change(self, change):
-        self.indices_text.value = ""
-        self._update_indices()
+        if self.subsample_mode.value == "stride":
+            self.indices_text.value = ""
+            self._update_indices()
 
     def _on_indices_change(self, change):
-        if change["new"].strip():
+        if self.subsample_mode.value == "custom" and change["new"].strip():
             self._update_indices_from_text(change["new"])
 
     def _update_indices(self):
         trajectory = self.model.trajectory
         if trajectory is None:
-            self.frame_count.value = "Selected frames: 0"
+            self.frame_count.value = ""
             return False
         if not isinstance(trajectory, TrajectoryData):
             self.status.value = (
@@ -164,11 +214,23 @@ class TrajectoryInputWidget(ipw.VBox):
         step_ids = list(trajectory.get_stepids())
         if not step_ids:
             step_ids = list(range(len(trajectory.get_array("positions"))))
-        self.stride.max = max(100, len(step_ids))
-        indices = build_step_indices(len(step_ids), self.stride.value)
+        total_frames = len(step_ids)
+        self.stride.max = max(100, total_frames)
+        stride_val = self.stride.value
+        indices = build_step_indices(total_frames, stride_val)
         self.model.selected_indices = [step_ids[i] for i in indices]
         self.model.structures = {}
-        self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
+        using_count = len(self.model.selected_indices)
+
+        stride_text = (
+            "every frame" if stride_val == 1 else f"every {stride_val}{_ordinal(stride_val)}"
+        )
+        file_part = f"<strong>{self.filename}</strong> · " if self.filename else ""
+        self.frame_count.value = (
+            f"<div style='font-size:13px;color:var(--feff-ink, #222);margin:4px 0;'>"
+            f"{file_part}{total_frames} frames · using <strong>{using_count}</strong> ({stride_text})"
+            f"</div>"
+        )
         return True
 
     def _update_indices_from_text(self, text: str):
@@ -178,7 +240,17 @@ class TrajectoryInputWidget(ipw.VBox):
             indices = _parse_indices(text)
             self.model.selected_indices = indices
             self.model.structures = {}
-            self.frame_count.value = f"Selected frames: {len(indices)}"
+            step_ids = list(self.model.trajectory.get_stepids()) or list(
+                range(len(self.model.trajectory.get_array("positions")))
+            )
+            total_frames = len(step_ids)
+            file_part = f"<strong>{self.filename}</strong> · " if self.filename else ""
+            self.frame_count.value = (
+                f"<div style='font-size:13px;color:var(--feff-ink, #222);margin:4px 0;'>"
+                f"{file_part}{total_frames} frames · using <strong>{len(indices)}</strong> (custom range)"
+                f"</div>"
+            )
+            self.status.clear()
         except Exception as exc:  # noqa: BLE001
             self.status.value = f"<span style='color: red'>Invalid indices: {exc}</span>"
 
@@ -186,11 +258,14 @@ class TrajectoryInputWidget(ipw.VBox):
         self.file_upload.value = () if isinstance(self.file_upload.value, tuple) else {}
         self.indices_text.value = ""
         self.frame_count.value = ""
+        self.filename = ""
         self.status.clear()
-        # Avoid triggering _update_indices while the model is being cleared by
-        # other widgets; reset will be followed by a model reset if needed.
+        self.subsample_mode.value = "stride"
+        self.stride.layout.display = "block"
+        self.indices_text.layout.display = "none"
+        self.viewer.children = [self.viewer.message]
         self.stride.unobserve(self._on_stride_change, names="value")
-        self.stride.value = 1
+        self.stride.value = 10
         self.stride.observe(self._on_stride_change, names="value")
         self.model.trajectory = None
         self.model.selected_indices = None
@@ -248,7 +323,6 @@ class FileListInputWidget(ipw.VBox):
         self.model.structures = {}
 
 
-
 class DatabaseInputWidget(ipw.VBox):
     """Select a stored structure or trajectory from the AiiDA database."""
 
@@ -272,25 +346,29 @@ class DatabaseInputWidget(ipw.VBox):
         self.database_query.observe(self._on_node_change, names="data_object")
 
         self.stride = ipw.IntSlider(
-            value=1,
+            value=10,
             min=1,
             max=100,
             step=1,
             description="Stride:",
             continuous_update=False,
             disabled=True,
+            style={"description_width": "initial"},
+            layout={"width": "300px"},
         )
         self.stride.observe(self._on_stride_change, names="value")
         self.indices_text = ipw.Text(
             value="",
-            placeholder="e.g. 0,10,20 or 0:100:10",
+            placeholder="e.g. 0:100:10 or 0, 10, 20, 30",
             description="Indices:",
+            style={"description_width": "initial"},
             layout={"width": "300px"},
             disabled=True,
         )
         self.indices_text.observe(self._on_indices_change, names="value")
         self.frame_count = ipw.HTML()
         self.status = Status()
+        self.viewer = StructureViewWidget()
 
         super().__init__(
             [
@@ -300,6 +378,7 @@ class DatabaseInputWidget(ipw.VBox):
                 ipw.HBox([self.stride, self.indices_text]),
                 self.frame_count,
                 self.status,
+                self.viewer,
             ]
         )
 
@@ -326,20 +405,20 @@ class DatabaseInputWidget(ipw.VBox):
                 self.model.structures = {}
                 self._set_trajectory_controls_enabled(False)
                 self.frame_count.value = "Selected frames: 1"
-                self.status.value = f"Selected stored structure PK {node.pk}."
+                self.viewer.assign_structure_from_structuredata(node)
+                self.status.success(f"Selected stored structure PK {node.pk}.")
             elif isinstance(node, TrajectoryData):
                 validate_trajectory_size(node)
                 self.model.structure = None
                 self.model.trajectory = node
                 self._set_trajectory_controls_enabled(True)
                 self._update_indices()
+                self.viewer.assign_structure_from_trajectorydata(node)
                 self.status.success(f"Selected stored trajectory PK {node.pk}.")
             else:
-                self.status.value = (
-                    "<span style='color: red'>Selected node is not a structure or trajectory.</span>"
-                )
+                self.status.failure("Selected node is not a structure or trajectory.")
         except Exception as exc:  # noqa: BLE001
-            self.status.value = f"<span style='color: red'>Error: {exc}</span>"
+            self.status.failure(f"Error: {exc}")
             self.model.structure = None
             self.model.trajectory = None
             self.model.selected_indices = None
@@ -352,7 +431,8 @@ class DatabaseInputWidget(ipw.VBox):
     def _clear_selected_input(self):
         self._set_trajectory_controls_enabled(False)
         self.frame_count.value = ""
-        self.status.value = ""
+        self.status.clear()
+        self.viewer.children = [self.viewer.message]
         self.model.structure = None
         self.model.trajectory = None
         self.model.selected_indices = None
@@ -371,7 +451,7 @@ class DatabaseInputWidget(ipw.VBox):
     def _update_indices(self):
         trajectory = self.model.trajectory
         if trajectory is None:
-            self.frame_count.value = "Selected frames: 0"
+            self.frame_count.value = ""
             return False
         if not isinstance(trajectory, TrajectoryData):
             self.status.value = (
@@ -381,11 +461,21 @@ class DatabaseInputWidget(ipw.VBox):
         step_ids = list(trajectory.get_stepids())
         if not step_ids:
             step_ids = list(range(len(trajectory.get_array("positions"))))
-        self.stride.max = max(100, len(step_ids))
-        indices = build_step_indices(len(step_ids), self.stride.value)
+        total_frames = len(step_ids)
+        self.stride.max = max(100, total_frames)
+        indices = build_step_indices(total_frames, self.stride.value)
         self.model.selected_indices = [step_ids[i] for i in indices]
         self.model.structures = {}
-        self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
+        using_count = len(self.model.selected_indices)
+        stride_val = self.stride.value
+        stride_text = (
+            "every frame" if stride_val == 1 else f"every {stride_val}{_ordinal(stride_val)}"
+        )
+        self.frame_count.value = (
+            f"<div style='font-size:13px;color:var(--feff-ink, #222);margin:4px 0;'>"
+            f"Stored trajectory PK {getattr(trajectory, 'pk', '')} · {total_frames} frames · using <strong>{using_count}</strong> ({stride_text})"
+            f"</div>"
+        )
         return True
 
     def _update_indices_from_text(self, text: str):
@@ -395,7 +485,15 @@ class DatabaseInputWidget(ipw.VBox):
             indices = _parse_indices(text)
             self.model.selected_indices = indices
             self.model.structures = {}
-            self.frame_count.value = f"Selected frames: {len(self.model.selected_indices)}"
+            step_ids = list(self.model.trajectory.get_stepids()) or list(
+                range(len(self.model.trajectory.get_array("positions")))
+            )
+            total_frames = len(step_ids)
+            self.frame_count.value = (
+                f"<div style='font-size:13px;color:var(--feff-ink, #222);margin:4px 0;'>"
+                f"Stored trajectory PK {getattr(self.model.trajectory, 'pk', '')} · {total_frames} frames · using <strong>{len(indices)}</strong> (custom range)"
+                f"</div>"
+            )
         except Exception as exc:  # noqa: BLE001
             self.status.value = f"<span style='color: red'>Invalid indices: {exc}</span>"
 
@@ -439,12 +537,13 @@ class InputWidget(ipw.VBox):
 
         self.status = Status()
         self.frame_count = ipw.HTML()
+        self.cost_preview = ipw.HTML()
 
         super().__init__(
             [
                 ipw.HTML("<h2>Input structures</h2>"),
                 self.tabs,
-                self.frame_count,
+                self.cost_preview,
                 self.absorber_selector,
                 self.status,
             ]
@@ -454,15 +553,42 @@ class InputWidget(ipw.VBox):
         self.model.observe(self._on_model_structures, names="structure")
         self.model.observe(self._on_model_structures, names="trajectory")
         self.model.observe(self._on_model_structures, names="selected_indices")
+        self.model.observe(self._on_model_structures, names="absorbing_atoms")
 
-    def _on_model_structures(self, change):
-        structures = self.model.get_structures()
-        if structures:
-            self.frame_count.value = f"Total structures ready: {len(structures)}"
-        elif self.model.trajectory is not None and self.model.selected_indices is not None:
-            selected_indices = cast(list[int], self.model.selected_indices)
-            self.frame_count.value = f"Selected trajectory frames: {len(selected_indices)}"
+    def _on_model_structures(self, _=None):
+        self._update_cost_preview()
+
+    def _update_cost_preview(self):
+        n_absorbers = len(self.model.absorbing_atoms or [])
+        is_md = self.model.trajectory is not None
+        if is_md:
+            selected_indices = self.model.selected_indices or []
+            n_frames = len(selected_indices)
+            noun = "frame" if n_frames == 1 else "frames"
         else:
+            structures = self.model.get_structures() or {}
+            n_frames = len(structures)
+            noun = "structure" if n_frames == 1 else "structures"
+
+        if n_frames > 0 and n_absorbers > 0:
+            total_runs = n_frames * n_absorbers
+            absorber_noun = "absorber" if n_absorbers == 1 else "absorbers"
+            self.cost_preview.value = (
+                f"<div class='feff-cost-callout'>"
+                f"<strong>Scope:</strong> {n_frames} {noun} × {n_absorbers} {absorber_noun} = "
+                f"<strong>{total_runs} FEFF runs</strong>"
+                f"</div>"
+            )
+            self.frame_count.value = ""
+        elif n_frames > 0:
+            self.cost_preview.value = (
+                f"<div style='font-size:12.5px;color:var(--feff-ink-muted, #666);margin:6px 0;'>"
+                f"{n_frames} {noun} ready · select absorbing atoms below to calculate run count"
+                f"</div>"
+            )
+            self.frame_count.value = ""
+        else:
+            self.cost_preview.value = ""
             self.frame_count.value = ""
 
     def _on_tab_change(self, change):
@@ -474,6 +600,7 @@ class InputWidget(ipw.VBox):
         }
         self.model.ensemble_source = source_map.get(change["new"], "none")
         self._clear_non_active_source(change["new"])
+        self._update_cost_preview()
 
     def _clear_non_active_source(self, active_index: int):
         """Reset all input widgets except the currently active one."""
@@ -495,6 +622,8 @@ class InputWidget(ipw.VBox):
         self.absorber_selector.reset()
         self.model.reset()
         self.tabs.selected_index = 0
+        self.cost_preview.value = ""
+        self.frame_count.value = ""
 
 
 def _parse_indices(text: str) -> list[int]:

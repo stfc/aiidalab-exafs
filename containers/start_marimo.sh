@@ -6,7 +6,7 @@ set -euo pipefail
 . /opt/conda/etc/profile.d/conda.sh
 conda activate base
 
-NOTEBOOK_FILE="/home/jovyan/apps/aiidalab-feff/notebooks/debye_waller.py"
+NOTEBOOK_TARGET="/home/jovyan/apps/aiidalab-feff/notebooks"
 PID_FILE="/tmp/marimo-server.pid"
 LOG_FILE="/tmp/marimo-server.log"
 
@@ -23,8 +23,8 @@ if ! command -v marimo >/dev/null 2>&1; then
     exit 0
 fi
 
-if [ ! -f "$NOTEBOOK_FILE" ]; then
-    echo "WARNING: $NOTEBOOK_FILE not found; skipping notebook server" >&2
+if [ ! -e "$NOTEBOOK_TARGET" ]; then
+    echo "WARNING: $NOTEBOOK_TARGET not found; skipping notebook server" >&2
     exit 0
 fi
 
@@ -38,7 +38,7 @@ if [ -n "${MARIMO_ALLOW_ORIGINS:-}" ]; then
     EXTRA_ARGS+=(--allow-origins "$MARIMO_ALLOW_ORIGINS")
 fi
 
-nohup marimo run "$NOTEBOOK_FILE" \
+nohup marimo run "$NOTEBOOK_TARGET" \
     --host 0.0.0.0 \
     --port 2718 \
     --headless \
@@ -47,4 +47,4 @@ nohup marimo run "$NOTEBOOK_FILE" \
     > "$LOG_FILE" 2>&1 &
 
 echo $! > "$PID_FILE"
-echo "Started marimo app server for ${NOTEBOOK_FILE} on port 2718 (PID $(cat "$PID_FILE"))"
+echo "Started marimo app server for ${NOTEBOOK_TARGET} on port 2718 (PID $(cat "$PID_FILE"))"

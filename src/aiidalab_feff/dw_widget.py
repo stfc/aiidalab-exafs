@@ -11,6 +11,7 @@ from typing import Any
 import ipywidgets as ipw
 import numpy as np
 import pandas as pd
+from alc_aiidalab_widgets.widgets.loading import LoadingWidget
 from IPython.display import display
 from md_exafs.debye_waller import (
     calculate_grouped_msrd,
@@ -28,9 +29,9 @@ class DebyeWallerScreeningWidget(ipw.VBox):
         self.input_model = input_model
 
         self._header = ipw.HTML(
-            "<h4>In-Memory Debye–Waller Disorder Screening</h4>"
-            "<p>Analyze trajectory positions in-memory to preview path variances (σ²) "
-            "and B-factors before launching HPC calculations.</p>"
+            "<h4>Debye–Waller disorder screening</h4>"
+            "<p>Analyze trajectory positions to preview path variances (σ²) "
+            "and B-factors before launching calculations.</p>"
         )
 
         self.absorber = ipw.Text(
@@ -48,16 +49,14 @@ class DebyeWallerScreeningWidget(ipw.VBox):
             layout={"width": "350px"},
         )
         self.run_button = ipw.Button(
-            description="Screen Disorder (In-Memory)",
+            description="Screen disorder",
             button_style="info",
             icon="bolt",
-            layout={"width": "230px"},
+            layout={"width": "180px"},
         )
         self.run_button.on_click(self._on_run)
 
-        onclick_js = (
-            "window.open('http://' + window.location.hostname + ':2718', '_blank')"
-        )
+        onclick_js = "window.open('http://' + window.location.hostname + ':2718/?file=debye_waller.py', '_blank')"
         style_css = (
             "display: inline-flex; align-items: center; justify-content: center; "
             "height: 28px; padding: 0 12px; margin-left: 6px; text-decoration: none; "
@@ -136,6 +135,7 @@ class DebyeWallerScreeningWidget(ipw.VBox):
     def _on_run(self, _):
         self.results_output.clear_output()
         with self.results_output:
+            display(LoadingWidget(message="Computing Debye–Waller MSRD and B-factors in-memory..."))
             ase_structures = self._extract_structures()
 
             if not ase_structures:
@@ -216,11 +216,7 @@ class DebyeWallerScreeningWidget(ipw.VBox):
                         }
                     )
                 for p in res_3b:
-                    scat = (
-                        p.get("type", "").split("-")[1]
-                        if "-" in p.get("type", "")
-                        else "3-body"
-                    )
+                    scat = p.get("type", "").split("-")[1] if "-" in p.get("type", "") else "3-body"
                     rows.append(
                         {
                             "path": f"{p.get('type', '3-body')} (N={p.get('count', 1)})",
@@ -246,9 +242,7 @@ class DebyeWallerScreeningWidget(ipw.VBox):
                     mean_b = float(np.mean(adp_res["b_factors"]))
                     abs_b = float(np.mean([adp_res["b_factors"][i] for i in central_indices]))
                     print(f"Mean isotropic B-factor (all atoms): {mean_b:.3f} Å²")
-                    print(
-                        f"Mean isotropic B-factor ({central_label} absorbers): {abs_b:.3f} Å²"
-                    )
+                    print(f"Mean isotropic B-factor ({central_label} absorbers): {abs_b:.3f} Å²")
 
             except Exception as err:  # noqa: BLE001
                 print(f"Debye–Waller screening failed: {err}")

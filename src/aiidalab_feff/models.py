@@ -60,6 +60,8 @@ class WorkflowModel(HasTraits):
 
     parameters = TraitDict(default_value=None, allow_none=True)
     path_cw_threshold = Float(default_value=-1.0)
+    label = Unicode(default_value="")
+    preset = Unicode(default_value="standard")
     code = Instance(Code, allow_none=True)
     computer = Instance(Computer, allow_none=True)
     # Scheduler options (remote only):
@@ -77,6 +79,8 @@ class WorkflowModel(HasTraits):
         """Reset all workflow state."""
         self.parameters = None
         self.path_cw_threshold = -1.0
+        self.label = ""
+        self.preset = "standard"
         self.code = None
         self.computer = None
         self.walltime_seconds = None
@@ -127,6 +131,15 @@ class ResultsModel(HasTraits):
     # children. ``None`` when no run is loaded or no per-snapshot data exists.
     xas_grid = Instance(dict, allow_none=True)
 
+    # Shared Fourier transform and display parameters for Spectrum and Path contributions:
+    ft_kmin = Float(default_value=2.0)
+    ft_kmax = Float(default_value=14.0)
+    ft_dk = Float(default_value=1.0)
+    ft_rmax = Float(default_value=8.0)
+    kweight = Int(default_value=2)
+    comparison_s02 = Float(default_value=1.0)
+    comparison_e0 = Float(default_value=0.0)
+
     def reset(self):
         """Reset results state."""
         self.averaged_xas = None
@@ -139,6 +152,13 @@ class ResultsModel(HasTraits):
         self.absorber_label = ""
         self.experimental_xas = None
         self.xas_grid = None
+        self.ft_kmin = 2.0
+        self.ft_kmax = 14.0
+        self.ft_dk = 1.0
+        self.ft_rmax = 8.0
+        self.kweight = 2
+        self.comparison_s02 = 1.0
+        self.comparison_e0 = 0.0
 
     @property
     def spectrum_title(self) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import html
 from io import StringIO
@@ -18,6 +19,8 @@ from md_exafs.spectra import average_chi_arrays
 
 from aiidalab_feff.experimental import ExperimentalSpectrumWidget
 from aiidalab_feff.models import ResultsModel
+from aiidalab_feff.running_tasks import _reference_structure
+from aiidalab_feff.styles import COLOR_EXPERIMENTAL, COLOR_SIMULATION, COLOR_WINDOW
 from aiidalab_feff.widgets.paths_explorer import PathContributionsExplorer
 
 # k-weight options: (display label, exponent n in kⁿχ(k))
@@ -29,46 +32,37 @@ _KWEIGHTS = [
 ]
 
 
-def _new_figure(figsize=(6, 4)):
-    """Create an ipympl-backed figure + axes pair, bypassing the pyplot state
-    machine so the figure is never auto-displayed in the calling cell.
-
-    Using ``plt.subplots()`` would register the figure in ``matplotlib.pyplot``
-    (causing it to leak into cell output and stack up across renders) and the
-    original code also broke widget comms by calling ``plt.close(fig)`` on
-    mounted canvases. Instead we construct a bare ``Figure`` and explicitly
-    attach the ipympl widget canvas via the backend's
-    ``new_figure_manager_given_figure`` — ``fig.canvas`` is then a proper
-    ``ipywidgets.Widget`` we can mount in a tab exactly once and redraw freely.
-    """
-    # Importing the backend registers it and exposes its canvas factory.
+def _new_figure(figsize=(5.0, 3.6)):
+    """Create an ipympl-backed figure + axes pair without pyplot manager leaks."""
     from ipympl.backend_nbagg import new_figure_manager_given_figure
     from matplotlib.figure import Figure
 
-    fig = Figure(figsize=figsize)
-    # Attaches a widget FigureCanvas + manager to ``fig``. Number 0 is unused
-    # since we don't register this figure with the pyplot figure manager map.
+    fig = Figure(figsize=figsize, layout="constrained")
     new_figure_manager_given_figure(0, fig)
+    if hasattr(fig.canvas, "header_visible"):
+        fig.canvas.header_visible = False
     ax = fig.subplots()
     return fig, ax
 
 
-def _ft_larch(k: np.ndarray, chi: np.ndarray, kmin: float, kmax: float,
-              kweight: int, dk: float, rmax: float):
-    """Run a larch xftf on the given arrays, returning (r, chir_mag).
-
-    Lightweight wrapper around aiida_feff's xftf_arrays so we don't have to materialise
-    AiiDA nodes (and so avoid polluting the provenance graph) every time the FT
-    parameter sliders move.
-    """
+def _ft_larch(
+    k: np.ndarray, chi: np.ndarray, kmin: float, kmax: float, kweight: int, dk: float, rmax: float
+):
+    """Run a larch xftf on the given arrays, returning (r, chir_mag)."""
     from aiida_feff.calcfunctions.larch import xftf_arrays
+
+    kmax_safe = min(kmax, float(k.max())) if len(k) > 0 else kmax
+    kmin_safe = max(kmin, float(k.min())) if len(k) > 0 else kmin
+    if kmin_safe >= kmax_safe:
+        kmin_safe = float(k.min())
+        kmax_safe = float(k.max())
 
     res = xftf_arrays(
         k,
         chi,
         {
-            "kmin": kmin,
-            "kmax": kmax,
+            "kmin": kmin_safe,
+            "kmax": kmax_safe,
             "kweight": kweight,
             "dk": dk,
             "rmax": rmax,
@@ -77,13 +71,15 @@ def _ft_larch(k: np.ndarray, chi: np.ndarray, kmin: float, kmax: float,
     return res["r"], res["chir_mag"]
 
 
-def _new_figure_2subplots(figsize=(10, 3)):
+def _new_figure_2subplots(figsize=(10, 3.5)):
     """Like :func:`_new_figure` but returns two side-by-side axes."""
     from ipympl.backend_nbagg import new_figure_manager_given_figure
     from matplotlib.figure import Figure
 
-    fig = Figure(figsize=figsize)
+    fig = Figure(figsize=figsize, layout="constrained")
     new_figure_manager_given_figure(0, fig)
+    if hasattr(fig.canvas, "header_visible"):
+        fig.canvas.header_visible = False
     ax_left, ax_right = fig.subplots(1, 2)
     return fig, ax_left, ax_right
 
@@ -106,7 +102,9 @@ def _average_xas_on_common_k(xas_nodes):
         [np.asarray(node.get_array("k"), dtype=float) for node in xas_nodes],
         [np.asarray(node.get_array("chi_k"), dtype=float) for node in xas_nodes],
     )
-    return avg.k, avg.mean, avg.std
+    if hasattr(avg, "k"):
+        return avg.k, avg.mean, avg.std
+    return avg[0], avg[1], avg[2]
 
 
 class ResultsWidget(ipw.VBox):
@@ -129,48 +127,151 @@ class ResultsWidget(ipw.VBox):
         self._fig_conv, self._ax_conv, self._ax_conv_resid = _new_figure_2subplots()
 
         # --- interactive plot controls (shared chi(k)/chi(R) k-weight + FT) --
+        kweight_val = int(getattr(results_model, "kweight", 2))
+        ft_kmin_val = float(getattr(results_model, "ft_kmin", 2.0))
+        ft_kmax_val = float(getattr(results_model, "ft_kmax", 14.0))
+        ft_dk_val = float(getattr(results_model, "ft_dk", 1.0))
+        ft_rmax_val = float(getattr(results_model, "ft_rmax", 8.0))
+        s02_val = float(getattr(results_model, "comparison_s02", 1.0))
+        e0_val = float(getattr(results_model, "comparison_e0", 0.0))
+
         self.kweight = ipw.Dropdown(
             options=_KWEIGHTS,
-            value=2,
+            value=kweight_val,
             description="k-weight:",
-            layout={"width": "180px"},
+            style={"description_width": "initial"},
+            layout={"width": "160px"},
         )
-        self.ft_kmin = ipw.FloatText(value=2.0, step=0.1, description="k_min:", layout={"width": "140px"})
-        self.ft_kmax = ipw.FloatText(value=14.0, step=0.1, description="k_max:", layout={"width": "140px"})
-        self.ft_dk = ipw.FloatText(value=1.0, step=0.1, description="Δk:", layout={"width": "140px"})
-        self.ft_rmax = ipw.FloatText(value=8.0, step=0.5, description="R_max (Å):", layout={"width": "160px"})
+        self.ft_kmin = ipw.FloatText(
+            value=ft_kmin_val,
+            step=0.1,
+            description="k_min:",
+            style={"description_width": "initial"},
+            layout={"width": "130px"},
+        )
+        self.ft_kmax = ipw.FloatText(
+            value=ft_kmax_val,
+            step=0.1,
+            description="k_max:",
+            style={"description_width": "initial"},
+            layout={"width": "130px"},
+        )
+        self.ft_dk = ipw.FloatText(
+            value=ft_dk_val,
+            step=0.1,
+            description="Δk:",
+            style={"description_width": "initial"},
+            layout={"width": "120px"},
+        )
+        self.ft_rmax = ipw.FloatText(
+            value=ft_rmax_val,
+            step=0.5,
+            description="R_max (Å):",
+            style={"description_width": "initial"},
+            layout={"width": "150px"},
+        )
         self.show_legends = ipw.Checkbox(
             value=False,
             description="Show legends",
             indent=False,
-            layout={"width": "130px"},
+            layout={"width": "auto"},
         )
+        has_exp = _has_chi_data(results_model.experimental_xas)
         self.show_experimental = ipw.Checkbox(
-            value=True,
+            value=has_exp,
             description="Show experimental",
+            disabled=not has_exp,
             indent=False,
-            layout={"width": "160px"},
+            layout={"width": "auto"},
         )
         self.comparison_s02 = ipw.BoundedFloatText(
-            value=1.0,
+            value=s02_val,
             min=0.0,
             max=2.0,
             step=0.01,
-            description="S₀²:",
-            layout={"width": "130px"},
+            description="Amplitude scale (S₀²):",
+            tooltip="Scale simulation amplitude to match experiment (does not re-run FEFF)",
+            style={"description_width": "initial"},
+            layout={"width": "190px"},
         )
         self.comparison_e0 = ipw.FloatText(
-            value=0.0,
+            value=e0_val,
             step=0.1,
             description="ΔE₀ (eV):",
-            layout={"width": "150px"},
+            style={"description_width": "initial"},
+            layout={"width": "140px"},
         )
         self.save_scaled_spectrum = ipw.Button(
             description="Save scaled simulation",
             icon="save",
             disabled=True,
+            layout={"width": "auto", "min_width": "180px"},
         )
+        self.save_scaled_spectrum.add_class("feff-btn-secondary")
         self.save_scaled_spectrum.on_click(self._on_save_scaled_spectrum)
+
+        # Bidirectional sync between ResultsWidget and shared ResultsModel
+        self._syncing_model = False
+
+        def _push_to_model(_):
+            if getattr(self, "_syncing_model", False):
+                return
+            self._syncing_model = True
+            try:
+                self.results_model.ft_kmin = float(self.ft_kmin.value)
+                self.results_model.ft_kmax = float(self.ft_kmax.value)
+                self.results_model.ft_dk = float(self.ft_dk.value)
+                self.results_model.ft_rmax = float(self.ft_rmax.value)
+                self.results_model.kweight = int(self.kweight.value)
+                self.results_model.comparison_s02 = float(self.comparison_s02.value)
+                self.results_model.comparison_e0 = float(self.comparison_e0.value)
+            finally:
+                self._syncing_model = False
+
+        self.ft_kmin.observe(_push_to_model, names="value")
+        self.ft_kmax.observe(_push_to_model, names="value")
+        self.ft_dk.observe(_push_to_model, names="value")
+        self.ft_rmax.observe(_push_to_model, names="value")
+        self.kweight.observe(_push_to_model, names="value")
+        self.comparison_s02.observe(_push_to_model, names="value")
+        self.comparison_e0.observe(_push_to_model, names="value")
+
+        def _pull_from_model(change):
+            if getattr(self, "_syncing_model", False):
+                return
+            self._syncing_model = True
+            try:
+                name = change.get("name")
+                val = change.get("new")
+                if name == "ft_kmin" and val is not None:
+                    self.ft_kmin.value = float(val)
+                elif name == "ft_kmax" and val is not None:
+                    self.ft_kmax.value = float(val)
+                elif name == "ft_dk" and val is not None:
+                    self.ft_dk.value = float(val)
+                elif name == "ft_rmax" and val is not None:
+                    self.ft_rmax.value = float(val)
+                elif name == "kweight" and val is not None:
+                    self.kweight.value = int(val)
+                elif name == "comparison_s02" and val is not None:
+                    self.comparison_s02.value = float(val)
+                elif name == "comparison_e0" and val is not None:
+                    self.comparison_e0.value = float(val)
+            finally:
+                self._syncing_model = False
+
+        self.results_model.observe(
+            _pull_from_model,
+            names=[
+                "ft_kmin",
+                "ft_kmax",
+                "ft_dk",
+                "ft_rmax",
+                "kweight",
+                "comparison_s02",
+                "comparison_e0",
+            ],
+        )
 
         # Convergence-tab k-weight (independent from chi(k)/chi(R) tabs).
         self.conv_kweight = ipw.Dropdown(
@@ -192,17 +293,26 @@ class ResultsWidget(ipw.VBox):
             description="Frames:",
             layout={"width": "180px", "height": "120px"},
         )
-        self.conv_all_sites = ipw.Button(description="All sites", icon="check-double", layout={"width": "100px"})
-        self.conv_all_frames = ipw.Button(description="All frames", icon="check-double", layout={"width": "100px"})
+        self.conv_all_sites = ipw.Button(
+            description="All sites", icon="check-double", layout={"width": "100px"}
+        )
+        self.conv_all_frames = ipw.Button(
+            description="All frames", icon="check-double", layout={"width": "100px"}
+        )
         self.conv_all_sites.on_click(lambda _: self._select_all_conv())
         self.conv_all_frames.on_click(lambda _: self._select_all_conv())
-        self.conv_box = ipw.VBox([
-            ipw.HBox([self.conv_kweight], layout={"margin": "0 0 4px 0"}),
-            ipw.HBox([
-                ipw.VBox([self.conv_sites, self.conv_all_sites]),
-                ipw.VBox([self.conv_frames, self.conv_all_frames]),
-            ], layout={"margin": "0 0 4px 0"}),
-        ])
+        self.conv_box = ipw.VBox(
+            [
+                ipw.HBox([self.conv_kweight], layout={"margin": "0 0 4px 0"}),
+                ipw.HBox(
+                    [
+                        ipw.VBox([self.conv_sites, self.conv_all_sites]),
+                        ipw.VBox([self.conv_frames, self.conv_all_frames]),
+                    ],
+                    layout={"margin": "0 0 4px 0"},
+                ),
+            ]
+        )
         self.conv_box.layout.display = "none"
 
         # Re-render the affected tabs whenever the controls change.
@@ -223,19 +333,29 @@ class ResultsWidget(ipw.VBox):
         self.paths_tab = ipw.VBox()
         self.experimental_widget = ExperimentalSpectrumWidget(results_model)
         self.experimental_reference = ipw.Accordion([self.experimental_widget], selected_index=None)
-        self.experimental_reference.set_title(0, "Experimental reference")
-        self.export_spectrum = ipw.Dropdown(description="Spectrum:", options=[])
+        self.experimental_reference.set_title(
+            0, "+ Add experimental reference spectrum (Athena, XDI, CSV, DAT)"
+        )
+        self.export_spectrum = ipw.Dropdown(
+            description="Spectrum:",
+            options=[],
+            style={"description_width": "initial"},
+            layout={"width": "200px"},
+        )
         self.export_spectrum.observe(self._on_spectrum_change, names="value")
         self.chi_k_preview = ipw.HTML("<em>No spectrum data available.</em>")
         self.chi_r_preview = ipw.HTML("<em>No Fourier-transform data available.</em>")
         self.chi_k_download_output = ipw.Output()
         self.chi_r_download_output = ipw.Output()
+        self.athena_chi_output = ipw.Output()
+        self.athena_chir_output = ipw.Output()
+
         self.download_chi_k = Download(
             "feff-exafs-chi-k.csv",
             cb=self._chi_k_csv,
             output=self.chi_k_download_output,
             mimetype="text/csv",
-            description="Download CSV",
+            description="Download CSV: χ(k)",
             icon="download",
             disabled=True,
         )
@@ -244,77 +364,137 @@ class ResultsWidget(ipw.VBox):
             cb=self._chi_r_csv,
             output=self.chi_r_download_output,
             mimetype="text/csv",
-            description="Download CSV",
+            description="Download CSV: |χ(R)|",
             icon="download",
             disabled=True,
         )
-        self.chi_k_export = ipw.Accordion(
+        self.download_athena_chi = Download(
+            "feff-exafs.chi",
+            cb=self._chi_k_athena,
+            output=self.athena_chi_output,
+            mimetype="text/plain",
+            description="Download Athena .chi",
+            icon="download",
+            disabled=True,
+        )
+        self.download_athena_chir = Download(
+            "feff-exafs.chir",
+            cb=self._chi_r_athena,
+            output=self.athena_chir_output,
+            mimetype="text/plain",
+            description="Download Athena .chir",
+            icon="download",
+            disabled=True,
+        )
+
+        self.export_card = ipw.VBox(
             [
-                ipw.VBox(
+                ipw.HTML(
+                    "<div style='font-size:13px;font-weight:600;margin-bottom:6px;'>Export simulation data:</div>"
+                ),
+                ipw.HBox(
                     [
-                        ipw.HTML("Preview and CSV use the selected k-weight."),
                         self.download_chi_k,
-                        self.chi_k_preview,
-                        self.chi_k_download_output,
-                    ]
-                )
-            ]
-        )
-        self.chi_k_export.set_title(0, "View and download χ(k) data")
-        self.chi_r_export = ipw.Accordion(
-            [
-                ipw.VBox(
-                    [
-                        ipw.HTML("Preview and CSV use the k-weight and FT settings above."),
+                        self.download_athena_chi,
                         self.download_chi_r,
-                        self.chi_r_preview,
-                        self.chi_r_download_output,
-                    ]
-                )
-            ]
+                        self.download_athena_chir,
+                    ],
+                    layout=ipw.Layout(grid_gap="8px", flex_flow="row wrap"),
+                ),
+            ],
+            layout=ipw.Layout(padding="10px 14px", border="1px solid #D5DBE1", margin="12px 0"),
         )
-        self.chi_r_export.set_title(0, "View and download χ(R) data")
-        self.spectrum_controls = ipw.HBox(
+
+        # Backward compatibility aliases
+        self.chi_k_export = ipw.VBox(
+            [self.download_chi_k, self.chi_k_preview], layout={"display": "none"}
+        )
+        self.chi_r_export = ipw.VBox(
+            [self.download_chi_r, self.chi_r_preview], layout={"display": "none"}
+        )
+
+        # Grouped controls (Display / Fourier window / Alignment to experiment)
+        display_box = ipw.HBox(
+            [self.export_spectrum, self.kweight, self.show_legends],
+            layout=ipw.Layout(grid_gap="8px", align_items="center"),
+        )
+        display_card = ipw.VBox(
             [
-                self.export_spectrum,
-                self.kweight,
-                self.ft_kmin,
-                self.ft_kmax,
-                self.ft_dk,
-                self.ft_rmax,
-                self.show_legends,
+                ipw.HTML(
+                    "<div style='font-size:11px;font-weight:600;color:var(--feff-ink-muted,#666);'>Display</div>"
+                ),
+                display_box,
+            ],
+            layout=ipw.Layout(padding="6px 10px", border="1px solid #D5DBE1"),
+        )
+
+        ft_box = ipw.HBox(
+            [self.ft_kmin, self.ft_kmax, self.ft_dk, self.ft_rmax],
+            layout=ipw.Layout(grid_gap="8px", align_items="center"),
+        )
+        ft_card = ipw.VBox(
+            [
+                ipw.HTML(
+                    "<div style='font-size:11px;font-weight:600;color:var(--feff-ink-muted,#666);'>Fourier transform window</div>"
+                ),
+                ft_box,
+            ],
+            layout=ipw.Layout(padding="6px 10px", border="1px solid #D5DBE1"),
+        )
+
+        alignment_box = ipw.HBox(
+            [
                 self.show_experimental,
                 self.comparison_s02,
                 self.comparison_e0,
                 self.save_scaled_spectrum,
             ],
-            layout={"margin": "0 0 8px 0", "flex_flow": "row wrap"},
+            layout=ipw.Layout(grid_gap="8px", align_items="center"),
         )
+        alignment_card = ipw.VBox(
+            [
+                ipw.HTML(
+                    "<div style='font-size:11px;font-weight:600;color:var(--feff-ink-muted,#666);'>Alignment to experiment</div>"
+                ),
+                alignment_box,
+            ],
+            layout=ipw.Layout(padding="6px 10px", border="1px solid #D5DBE1"),
+        )
+
+        self.spectrum_controls = ipw.HBox(
+            [display_card, ft_card, alignment_card],
+            layout=ipw.Layout(flex_flow="row wrap", grid_gap="10px", margin="0 0 12px 0"),
+        )
+
         self.chi_k_panel = ipw.VBox(
             [
                 ipw.HTML("<h3>χ(k)</h3>"),
                 self._fig_chi_k.canvas,
-                self.chi_k_export,
             ],
-            layout={"flex": "1 1 0", "min_width": "0", "padding": "0 0.75em 0 0"},
+            layout=ipw.Layout(flex="1 1 0", min_width="0", padding="0 0.75em 0 0"),
+        )
+        self.chi_r_caption = ipw.HTML(
+            "<div style='font-size:11.5px;color:var(--feff-ink-muted,#666);margin-top:2px;'>"
+            "Note: |χ(R)| is not phase-corrected. Peaks appear ~0.3–0.5 Å below true interatomic distances."
+            "</div>"
         )
         self.chi_r_panel = ipw.VBox(
             [
                 ipw.HTML("<h3>χ(R)</h3>"),
                 self._fig_chi_r.canvas,
-                self.chi_r_export,
+                self.chi_r_caption,
             ],
-            layout={"flex": "1 1 0", "min_width": "0", "padding": "0 0 0 0.75em"},
+            layout=ipw.Layout(flex="1 1 0", min_width="0", padding="0 0 0 0.75em"),
         )
         self.spectrum_tab = ipw.VBox(
             [
-                ipw.HTML("<h2>Spectrum</h2>"),
                 self.experimental_reference,
                 self.spectrum_controls,
                 ipw.HBox(
                     [self.chi_k_panel, self.chi_r_panel],
-                    layout={"align_items": "flex-start", "width": "100%"},
+                    layout=ipw.Layout(align_items="flex-start", width="100%"),
                 ),
+                self.export_card,
             ]
         )
 
@@ -330,14 +510,34 @@ class ResultsWidget(ipw.VBox):
         self.reset_button = ipw.Button(
             description="Refresh results",
             icon="refresh",
+            layout=ipw.Layout(width="auto", min_width="120px"),
         )
+        self.reset_button.add_class("feff-btn-secondary")
         self.reset_button.on_click(self._on_refresh)
+
+        onclick_js = (
+            "window.open('http://' + window.location.hostname "
+            "+ ':2718/?file=debye_waller.py', '_blank')"
+        )
+        self.marimo_dw_btn = ipw.HTML(
+            f'<a href="javascript:void(0)" onclick="{onclick_js}" '
+            'class="jupyter-widgets jupyter-button widget-button" '
+            'style="display:inline-flex;align-items:center;height:28px;padding:0 12px;margin-left:10px;text-decoration:none;'
+            "border:1px solid #ccc;background-color:#f8f9fa;color:#333;"
+            'border-radius:4px;font-weight:500;font-size:12px;cursor:pointer;">'
+            "Open Debye–Waller analysis (Marimo) ↗</a>"
+        )
+
+        header_row = ipw.HBox(
+            [self.reset_button, self.marimo_dw_btn],
+            layout=ipw.Layout(align_items="center", margin="0 0 10px 0"),
+        )
 
         super().__init__(
             [
                 self.header,
                 self.pk_label,
-                self.reset_button,
+                header_row,
                 self.status,
                 self.tabs,
             ]
@@ -351,6 +551,25 @@ class ResultsWidget(ipw.VBox):
 
     # ── model / control observers ─────────────────────────────────────────
     def _on_results_change(self, change):
+        name = change.get("name")
+        if name == "experimental_xas":
+            has_exp = _has_chi_data(self.results_model.experimental_xas)
+            self.show_experimental.disabled = not has_exp
+            self.show_experimental.value = has_exp
+            if has_exp:
+                exp_node = self.results_model.experimental_xas
+                lbl = getattr(exp_node, "label", "") or f"PK {exp_node.pk}"
+                self.experimental_reference.set_title(0, f"✓ Experimental reference: {lbl}")
+                self.experimental_reference.selected_index = None
+            else:
+                self.experimental_reference.set_title(
+                    0, "+ Add experimental reference spectrum (Athena, XDI, CSV, DAT)"
+                )
+            self._render_chi_k()
+            self._render_chi_r()
+            self._render_exports()
+            return
+
         if change["new"] is not None:
             self._render()
 
@@ -364,6 +583,7 @@ class ResultsWidget(ipw.VBox):
         self._render_exports()
 
     def _on_ft_change(self, _):
+        self._render_chi_k()
         self._render_chi_r()
         self._render_chi_r_export()
         self._render_convergence()
@@ -436,10 +656,31 @@ class ResultsWidget(ipw.VBox):
             return
 
         node = self.results_model.process_node
-        if isinstance(node, orm.ProcessNode) and node.pk is not None:
-            self.pk_label.value = f"Process PK: <b>{node.pk}</b>"
+        label = getattr(node, "label", "") or ""
+        pk = getattr(node, "pk", "")
+        pk_text = f"Run #{pk}" if pk else ""
+        formula = ""
+        if node is not None and hasattr(node, "inputs"):
+            st = _reference_structure(node.inputs)
+            if st is not None and hasattr(st, "get_formula"):
+                formula = st.get_formula()
+
+        title_text = f"{formula} · {self.results_model.spectrum_title}".strip(" ·")
+        if label and label != "—":
+            self.header.value = f"<h2 style='margin:0 0 2px 0;'>Results: {html.escape(label)}</h2>"
+            self.pk_label.value = (
+                f"<div style='font-size:13px;color:var(--feff-ink-muted, #666);margin-bottom:8px;'>"
+                f"{html.escape(title_text)} <span style='margin-left:8px;'>({pk_text})</span>"
+                f"</div>"
+            )
+        elif title_text:
+            self.header.value = (
+                f"<h2 style='margin:0 0 2px 0;'>Results: {html.escape(title_text)}</h2>"
+            )
+            self.pk_label.value = f"<div style='font-size:12px;color:var(--feff-ink-muted);margin-bottom:8px;'>{pk_text}</div>"
         else:
-            self.pk_label.value = ""
+            self.header.value = "<h2>Results</h2>"
+            self.pk_label.value = f"<div style='font-size:12px;color:var(--feff-ink-muted);margin-bottom:8px;'>{pk_text}</div>"
 
         site_keys = [k for k in self.results_model.averaged_xas if k.startswith("site_")]
         self.conv_box.layout.display = "block" if site_keys else "none"
@@ -460,13 +701,9 @@ class ResultsWidget(ipw.VBox):
             msg = (
                 f"Warning: {exit_msg}"
                 if exit_msg
-                else f"Warning: {self.results_model.n_failed} snapshot calculations failed."
+                else f"Warning: {self.results_model.n_failed} frame calculations failed."
             )
-            self.status.value = (
-                f"<span style='color: orange'>"
-                f"{html.escape(msg)}"
-                f"</span>"
-            )
+            self.status.value = f"<span style='color: orange'>{html.escape(msg)}</span>"
 
     # ── helpers ───────────────────────────────────────────────────────────
     @staticmethod
@@ -484,24 +721,31 @@ class ResultsWidget(ipw.VBox):
         Defaults to selecting all available sites and all frames so the initial
         view matches the full ensemble average.
         """
-        grid = self.results_model.xas_grid or {}
-        if not grid:
-            self.conv_sites.options = []
-            self.conv_frames.options = []
-            self.conv_sites.value = ()
-            self.conv_frames.value = ()
-            return
-        site_indices = sorted({s for _, s in grid.keys()})
-        frame_indices = sorted({f for f, _ in grid.keys()})
-        # Use string values — ipywidgets SelectMultiple validates more
-        # reliably with string values than ints.
-        self.conv_sites.options = [str(s) for s in site_indices]
-        self.conv_frames.options = [str(f) for f in frame_indices]
-        # If nothing selected yet (first population), select everything.
-        if not self.conv_sites.value:
-            self.conv_sites.value = tuple(str(s) for s in site_indices)
-        if not self.conv_frames.value:
-            self.conv_frames.value = tuple(str(f) for f in frame_indices)
+        # Mute observer during batch updates to prevent redundant full re-averagings
+        self.conv_sites.unobserve(self._on_conv_change, names="value")
+        self.conv_frames.unobserve(self._on_conv_change, names="value")
+        try:
+            grid = self.results_model.xas_grid or {}
+            if not grid:
+                self.conv_sites.options = []
+                self.conv_frames.options = []
+                self.conv_sites.value = ()
+                self.conv_frames.value = ()
+                return
+            site_indices = sorted({s for _, s in grid})
+            frame_indices = sorted({f for f, _ in grid})
+            # Use string values — ipywidgets SelectMultiple validates more
+            # reliably with string values than ints.
+            self.conv_sites.options = [str(s) for s in site_indices]
+            self.conv_frames.options = [str(f) for f in frame_indices]
+            # If nothing selected yet (first population), select everything.
+            if not self.conv_sites.value:
+                self.conv_sites.value = tuple(str(s) for s in site_indices)
+            if not self.conv_frames.value:
+                self.conv_frames.value = tuple(str(f) for f in frame_indices)
+        finally:
+            self.conv_sites.observe(self._on_conv_change, names="value")
+            self.conv_frames.observe(self._on_conv_change, names="value")
 
     def _spectrum_title(self, suffix: str = "") -> str:
         """Build a plot title using the model's absorber/edge metadata."""
@@ -527,33 +771,53 @@ class ResultsWidget(ipw.VBox):
             k, chi_k, self.comparison_s02.value, self.comparison_e0.value
         )
         n = int(self.kweight.value)
-        weighted = chi_k_scaled * (k_scaled ** n) if n else chi_k_scaled
+        weighted = chi_k_scaled * (k_scaled**n) if n else chi_k_scaled
 
         label = self._kweight_label(n)
-        ax.plot(k_scaled, weighted, label="Simulated")
+        unit = " (Å⁻²)" if n == 2 else (" (Å⁻¹)" if n == 1 else (" (Å⁻³)" if n == 3 else ""))
+        ax.plot(k_scaled, weighted, color=COLOR_SIMULATION, lw=1.8, label="Simulated")
         if "chi_k_std" in xas.get_arraynames() and n:
             from aiida_feff.calcfunctions.experimental import shifted_k_mask
 
             mask = shifted_k_mask(k, float(self.comparison_e0.value))
-            std = np.asarray(xas.get_array("chi_k_std"), dtype=float)[mask] * (k_scaled ** n)
+            std = np.asarray(xas.get_array("chi_k_std"), dtype=float)[mask] * (k_scaled**n)
             s02_val = float(self.comparison_s02.value)
             ax.fill_between(
                 k_scaled,
                 weighted - s02_val * std,
                 weighted + s02_val * std,
-                alpha=0.3,
+                color=COLOR_SIMULATION,
+                alpha=0.2,
                 label="±1σ",
             )
         experimental = self.results_model.experimental_xas
         if self.show_experimental.value and _has_chi_data(experimental):
             exp_k = np.asarray(experimental.get_array("k"), dtype=float)
             exp_chi = np.asarray(experimental.get_array("chi_k"), dtype=float)
-            exp_weighted = exp_chi * (exp_k ** n) if n else exp_chi
-            ax.plot(exp_k, exp_weighted, color="C3", ls="--", label="Experimental")
+            exp_weighted = exp_chi * (exp_k**n) if n else exp_chi
+            ax.plot(
+                exp_k, exp_weighted, color=COLOR_EXPERIMENTAL, ls="--", lw=1.5, label="Experimental"
+            )
+
+        # Shade excluded FT window region and mark boundaries
+        kmin_val = float(self.ft_kmin.value)
+        kmax_val = float(self.ft_kmax.value)
+        ax.axvspan(
+            0,
+            kmin_val,
+            color=COLOR_WINDOW,
+            alpha=0.12,
+            label="Window excluded" if self.show_legends.value else None,
+        )
+        max_k_val = max(float(k_scaled.max()), 20.0)
+        ax.axvspan(kmax_val, max_k_val, color=COLOR_WINDOW, alpha=0.12)
+        ax.axvline(kmin_val, color=COLOR_WINDOW, linestyle="--", linewidth=1.2, alpha=0.7)
+        ax.axvline(kmax_val, color=COLOR_WINDOW, linestyle="--", linewidth=1.2, alpha=0.7)
+
         ax.set_xlabel("k (Å⁻¹)")
-        ax.set_ylabel(label)
+        ax.set_ylabel(f"{label}{unit}")
         if self.show_legends.value:
-            ax.legend()
+            ax.legend(fontsize=8)
         ax.set_title(self._spectrum_title(f"{self._selected_spectrum_label()} {label}"))
         self._redraw(self._fig_chi_k)
 
@@ -567,9 +831,7 @@ class ResultsWidget(ipw.VBox):
 
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
-        k, chi_k = scaled_chi_arrays(
-            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
-        )
+        k, chi_k = scaled_chi_arrays(k, chi_k, self.comparison_s02.value, self.comparison_e0.value)
         kweight = int(self.kweight.value)
         kmin = float(self.ft_kmin.value)
         kmax = float(self.ft_kmax.value)
@@ -585,7 +847,8 @@ class ResultsWidget(ipw.VBox):
             return
 
         kw_lbl = self._kweight_label(kweight)
-        ax.plot(r, chir_mag, label="Simulated")
+        unit = " (Å⁻³)" if kweight == 2 else ""
+        ax.plot(r, chir_mag, color=COLOR_SIMULATION, lw=1.8, label="Simulated")
         experimental = self.results_model.experimental_xas
         if self.show_experimental.value and _has_chi_data(experimental):
             try:
@@ -595,14 +858,21 @@ class ResultsWidget(ipw.VBox):
                     f"<span style='color: orange'>Experimental FT unavailable: {exc}</span>"
                 )
             else:
-                ax.plot(exp_r, exp_chir_mag, color="C3", ls="--", label="Experimental")
+                ax.plot(
+                    exp_r,
+                    exp_chir_mag,
+                    color=COLOR_EXPERIMENTAL,
+                    ls="--",
+                    lw=1.5,
+                    label="Experimental",
+                )
         ax.set_xlabel("R (Å)")
-        ax.set_ylabel("|χ(R)|")
+        ax.set_ylabel(f"|χ(R)|{unit}")
         if self.show_legends.value:
-            ax.legend()
-        ax.set_title(self._spectrum_title(
-            f"{self._selected_spectrum_label()} |χ(R)| ({kw_lbl} FT)"
-        ))
+            ax.legend(fontsize=8)
+        ax.set_title(
+            self._spectrum_title(f"{self._selected_spectrum_label()} |χ(R)| ({kw_lbl} FT)")
+        )
         self._redraw(self._fig_chi_r)
 
     def _render_convergence(self):
@@ -621,7 +891,7 @@ class ResultsWidget(ipw.VBox):
         kw_lbl = self._kweight_label(n)
 
         if not grid:
-            ax_top.set_title("No per-snapshot grid available for sub-sampling.")
+            ax_top.set_title("No per-frame grid available for sub-sampling.")
             self._redraw(self._fig_conv)
             return
 
@@ -633,14 +903,12 @@ class ResultsWidget(ipw.VBox):
             return
         k_full = np.asarray(full_xas.get_array("k"), dtype=float)
         chi_full = np.asarray(full_xas.get_array("chi_k"), dtype=float)
-        chi_full_w = chi_full * (k_full ** n) if n else chi_full
+        chi_full_w = chi_full * (k_full**n) if n else chi_full
 
         # Selected subset
         sel_sites = {int(s) for s in (self.conv_sites.value or [])}
         sel_frames = {int(f) for f in (self.conv_frames.value or [])}
-        subset_nodes = [
-            grid[(f, s)] for (f, s) in grid.keys() if f in sel_frames and s in sel_sites
-        ]
+        subset_nodes = [grid[(f, s)] for (f, s) in grid if f in sel_frames and s in sel_sites]
 
         n_sel = len(subset_nodes)
         n_total = len(grid)
@@ -649,27 +917,43 @@ class ResultsWidget(ipw.VBox):
             self._redraw(self._fig_conv)
             return
 
-        # Re-average the selected subset on a common k-grid.
-        k_sub, chi_sub_avg, _ = _average_xas_on_common_k(subset_nodes)
-        chi_sub_w = chi_sub_avg * (k_sub ** n) if n else chi_sub_avg
+        all_sites = {s for _, s in grid}
+        all_frames = {f for f, _ in grid}
+        is_full_ensemble = (
+            sel_sites == all_sites and sel_frames == all_frames and "all" in averaged_xas
+        )
+
+        if is_full_ensemble:
+            k_sub = k_full
+            chi_sub_avg = chi_full
+        else:
+            # Re-average the selected subset on a common k-grid.
+            k_sub, chi_sub_avg, _ = _average_xas_on_common_k(subset_nodes)
+        chi_sub_w = chi_sub_avg * (k_sub**n) if n else chi_sub_avg
 
         # --- left: sub-sampled χ(k) average + faint per-site averages ---
-        ax_top.plot(k_sub, chi_sub_w, color="C0", lw=2,
-                    label=f"Subset avg ({n_sel}/{n_total} runs)")
+        ax_top.plot(
+            k_sub, chi_sub_w, color="C0", lw=2, label=f"Subset avg ({n_sel}/{n_total} runs)"
+        )
         # Full ensemble average (all sites, all frames) as a reference line.
-        ax_top.plot(k_full, chi_full_w, color="k", lw=1.5, ls="--",
-                    label=f"Full ensemble ({n_total} runs)")
+        ax_top.plot(
+            k_full, chi_full_w, color="k", lw=1.5, ls="--", label=f"Full ensemble ({n_total} runs)"
+        )
         # Overlay per-site averages within the selected subset.
-        site_keys_in_subset = sorted({s for (f, s) in grid.keys()
-                                      if f in sel_frames and s in sel_sites})
+        site_keys_in_subset = sorted({s for (f, s) in grid if f in sel_frames and s in sel_sites})
         for i, s in enumerate(site_keys_in_subset):
-            site_nodes = [grid[(f, s)] for f in sel_frames if (f, s) in grid]
-            if not site_nodes:
-                continue
-            ks, chs, _ = _average_xas_on_common_k(site_nodes)
-            chs_w = chs * (ks ** n) if n else chs
-            ax_top.plot(ks, chs_w, alpha=0.5, lw=1, color=f"C{i + 1}",
-                        label=f"Site {s}")
+            site_key = f"site_{s:04d}" if f"site_{s:04d}" in averaged_xas else f"site_{s}"
+            if is_full_ensemble and site_key in averaged_xas:
+                site_node = averaged_xas[site_key]
+                ks = np.asarray(site_node.get_array("k"), dtype=float)
+                chs = np.asarray(site_node.get_array("chi_k"), dtype=float)
+            else:
+                site_nodes = [grid[(f, s)] for f in sel_frames if (f, s) in grid]
+                if not site_nodes:
+                    continue
+                ks, chs, _ = _average_xas_on_common_k(site_nodes)
+            chs_w = chs * (ks**n) if n else chs
+            ax_top.plot(ks, chs_w, alpha=0.5, lw=1, color=f"C{i + 1}", label=f"Site {s}")
 
         ax_top.set_ylabel(kw_lbl)
         ax_top.set_xlabel("k (Å⁻¹)")
@@ -680,21 +964,40 @@ class ResultsWidget(ipw.VBox):
         # --- right: the same subset/full comparison after Fourier transform ---
         try:
             r_sub, chir_sub = _ft_larch(
-                k_sub, chi_sub_avg, float(self.ft_kmin.value),
-                float(self.ft_kmax.value), n, float(self.ft_dk.value),
+                k_sub,
+                chi_sub_avg,
+                float(self.ft_kmin.value),
+                float(self.ft_kmax.value),
+                n,
+                float(self.ft_dk.value),
                 float(self.ft_rmax.value),
             )
             r_full, chir_full = _ft_larch(
-                k_full, chi_full, float(self.ft_kmin.value),
-                float(self.ft_kmax.value), n, float(self.ft_dk.value),
+                k_full,
+                chi_full,
+                float(self.ft_kmin.value),
+                float(self.ft_kmax.value),
+                n,
+                float(self.ft_dk.value),
                 float(self.ft_rmax.value),
             )
         except Exception as exc:  # noqa: BLE001
             ax_resid.set_title("χ(R) transform failed")
-            ax_resid.text(0.5, 0.5, str(exc), ha="center", va="center", transform=ax_resid.transAxes)
+            ax_resid.text(
+                0.5, 0.5, str(exc), ha="center", va="center", transform=ax_resid.transAxes
+            )
         else:
-            ax_resid.plot(r_sub, chir_sub, color="C0", lw=2, label=f"Subset avg ({n_sel}/{n_total} runs)")
-            ax_resid.plot(r_full, chir_full, color="k", lw=1.5, ls="--", label=f"Full ensemble ({n_total} runs)")
+            ax_resid.plot(
+                r_sub, chir_sub, color="C0", lw=2, label=f"Subset avg ({n_sel}/{n_total} runs)"
+            )
+            ax_resid.plot(
+                r_full,
+                chir_full,
+                color="k",
+                lw=1.5,
+                ls="--",
+                label=f"Full ensemble ({n_total} runs)",
+            )
             ax_resid.set_xlabel("R (Å)")
             ax_resid.set_ylabel("|χ(R)|")
             ax_resid.set_title(f"χ(R) convergence ({kw_lbl} FT)")
@@ -704,21 +1007,46 @@ class ResultsWidget(ipw.VBox):
         self._redraw(self._fig_conv)
 
     def _render_paths(self):
-        if not self.results_model.has_path_contributions():
+        source = self.results_model.path_contributions or self.results_model.archive
+        if source is None:
+            self._current_paths_source = None
             self.paths_tab.children = [
                 ipw.HTML(
-                    "Path contributions not available. "
-                    "Set Path CW threshold ≥ 0 in the FEFF parameters step."
+                    "<div style='padding: 16px; color: var(--feff-ink-muted, #555); background: var(--feff-surface, #f8f9fa); "
+                    "border: 1px solid var(--feff-rule, #D5DBE1); border-radius: 4px; margin: 12px 0;'>"
+                    "<strong>No scattering paths found.</strong><br>"
+                    "To view path contributions, enable <em>Store individual scattering paths</em> in Settings before running."
+                    "</div>"
                 )
             ]
             return
 
-        # Replace the explorer each time; the PathContributionsExplorer is
-        # stateful and bound to a specific node, so reusing one instance across
-        # different processes would display stale data.
-        source = self.results_model.path_contributions or self.results_model.archive
+        if getattr(self, "_current_paths_source", None) is source and self.paths_tab.children:
+            return
+        self._current_paths_source = source
+
+        process_node = self.results_model.process_node
+        structure = None
+        if process_node is not None and hasattr(process_node, "inputs"):
+            if hasattr(process_node.inputs, "structure"):
+                with contextlib.suppress(Exception):
+                    structure = process_node.inputs.structure.get_ase()
+            elif hasattr(process_node.inputs, "structures"):
+                with contextlib.suppress(Exception):
+                    for k in dir(process_node.inputs.structures):
+                        if not k.startswith("_"):
+                            st = getattr(process_node.inputs.structures, k)
+                            if hasattr(st, "get_ase"):
+                                structure = st.get_ase()
+                                break
+            elif hasattr(process_node.inputs, "trajectory"):
+                with contextlib.suppress(Exception):
+                    structure = process_node.inputs.trajectory.get_step_structure(0).get_ase()
+
         explorer = PathContributionsExplorer(
             source,  # type: ignore[arg-type]
+            structure=structure,
+            results_model=self.results_model,
         )
         self.paths_tab.children = [explorer]
 
@@ -740,9 +1068,68 @@ class ResultsWidget(ipw.VBox):
         self._render_exports()
 
     def _render_exports(self, _=None):
-        """Refresh both data exports for the selected spectrum."""
+        """Refresh all data exports for the selected spectrum."""
         self._render_chi_k_export()
         self._render_chi_r_export()
+        self._render_athena_exports()
+
+    def _render_athena_exports(self):
+        """Update Athena download filenames and enabled state."""
+        xas = self._selected_export_spectrum()
+        can_export = xas is not None
+        self.download_athena_chi.disabled = not can_export
+        self.download_athena_chir.disabled = not can_export
+        if can_export:
+            spec = self.export_spectrum.value or "all"
+            self.download_athena_chi.filename = f"feff-exafs-{spec}.chi"
+            self.download_athena_chir.filename = f"feff-exafs-{spec}.chir"
+
+    def _chi_k_athena(self) -> str:
+        """Serialize χ(k) in Athena-compatible .chi ASCII format."""
+        xas = self._selected_export_spectrum()
+        if xas is None:
+            return ""
+        k = np.asarray(xas.get_array("k"), dtype=float)
+        chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
+        k_scaled, chi_scaled = scaled_chi_arrays(
+            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
+        )
+        n = int(self.kweight.value)
+        k_w = chi_scaled * (k_scaled**n) if n else chi_scaled
+        title = self.results_model.spectrum_title or "FEFF simulation"
+        pk = getattr(self.results_model.process_node, "pk", None)
+        out = StringIO()
+        out.write("# Athena chi(k) data file generated by AiiDAlab FEFF\n")
+        out.write(f"# title: {title} (PK {pk})\n")
+        out.write(f"# k-weight: {n}\n")
+        out.write(f"# S02: {self.comparison_s02.value}\n")
+        out.write(f"# dE0: {self.comparison_e0.value}\n")
+        out.write(f"# columns: k chi k^{n}*chi\n")
+        out.write(f"{'# k':>12} {'chi':>16} {f'k^{n}*chi':>16}\n")
+        for kv, cv, cwv in zip(k_scaled, chi_scaled, k_w, strict=False):
+            out.write(f"{kv:12.4f} {cv:16.8e} {cwv:16.8e}\n")
+        return out.getvalue()
+
+    def _chi_r_athena(self) -> str:
+        """Serialize |χ(R)| in Athena-compatible .chir ASCII format."""
+        xas = self._selected_export_spectrum()
+        if xas is None:
+            return ""
+        r, chir_mag = self._chi_r_arrays(xas)
+        title = self.results_model.spectrum_title or "FEFF simulation"
+        pk = getattr(self.results_model.process_node, "pk", None)
+        out = StringIO()
+        out.write("# Athena chi(R) data file generated by AiiDAlab FEFF\n")
+        out.write(f"# title: {title} (PK {pk})\n")
+        out.write(
+            f"# FT window: kmin={self.ft_kmin.value}, kmax={self.ft_kmax.value}, "
+            f"dk={self.ft_dk.value}, rmax={self.ft_rmax.value}\n"
+        )
+        out.write(f"# k-weight: {self.kweight.value}\n")
+        out.write(f"{'# R':>12} {'chir_mag':>16}\n")
+        for rv, cmv in zip(r, chir_mag, strict=False):
+            out.write(f"{rv:12.4f} {cmv:16.8e}\n")
+        return out.getvalue()
 
     def _render_chi_k_export(self):
         """Preview and export the selected k-weighted χ(k) spectrum."""
@@ -753,16 +1140,14 @@ class ResultsWidget(ipw.VBox):
             return
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
-        k, chi_k = scaled_chi_arrays(
-            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
-        )
+        k, chi_k = scaled_chi_arrays(k, chi_k, self.comparison_s02.value, self.comparison_e0.value)
         kweight = int(self.kweight.value)
-        weighted = chi_k * (k ** kweight) if kweight else chi_k
-        rows = _format_preview_rows(
-            zip(k[:20], chi_k[:20], weighted[:20], strict=True)
-        )
+        weighted = chi_k * (k**kweight) if kweight else chi_k
+        rows = _format_preview_rows(zip(k[:20], chi_k[:20], weighted[:20], strict=True))
         remaining = (
-            "" if len(k) <= 20 else f"<p><em>{len(k) - 20} further rows are in the download.</em></p>"
+            ""
+            if len(k) <= 20
+            else f"<p><em>{len(k) - 20} further rows are in the download.</em></p>"
         )
         self.chi_k_preview.value = (
             f"<p>{len(k)} points. Preview of the first {min(len(k), 20)}:</p>"
@@ -788,11 +1173,11 @@ class ResultsWidget(ipw.VBox):
             self.chi_r_preview.value = f"<em>Fourier transform unavailable: {exc}</em>"
             self.download_chi_r.disabled = True
             return
-        rows = _format_preview_rows(
-            zip(r[:20], chir_mag[:20], strict=True)
-        )
+        rows = _format_preview_rows(zip(r[:20], chir_mag[:20], strict=True))
         remaining = (
-            "" if len(r) <= 20 else f"<p><em>{len(r) - 20} further rows are in the download.</em></p>"
+            ""
+            if len(r) <= 20
+            else f"<p><em>{len(r) - 20} further rows are in the download.</em></p>"
         )
         self.chi_r_preview.value = (
             f"<p>{len(r)} points. Preview of the first {min(len(r), 20)}:</p>"
@@ -823,11 +1208,9 @@ class ResultsWidget(ipw.VBox):
             return ""
         k = np.asarray(xas.get_array("k"), dtype=float)
         chi_k = np.asarray(xas.get_array("chi_k"), dtype=float)
-        k, chi_k = scaled_chi_arrays(
-            k, chi_k, self.comparison_s02.value, self.comparison_e0.value
-        )
+        k, chi_k = scaled_chi_arrays(k, chi_k, self.comparison_s02.value, self.comparison_e0.value)
         kweight = int(self.kweight.value)
-        weighted = chi_k * (k ** kweight) if kweight else chi_k
+        weighted = chi_k * (k**kweight) if kweight else chi_k
         output = StringIO()
         writer = csv.writer(output)
         _write_export_metadata(
@@ -901,12 +1284,15 @@ class ResultsWidget(ipw.VBox):
         self._clear_figure(self._ax_chi_r)
         self._clear_figure(self._ax_conv)
         self._clear_figure(self._ax_conv_resid)
+        self._current_paths_source = None
         self.paths_tab.children = []
         self.export_spectrum.options = []
         self.chi_k_preview.value = "<em>No spectrum data available.</em>"
         self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"
         self.download_chi_k.disabled = True
         self.download_chi_r.disabled = True
+        self.download_athena_chi.disabled = True
+        self.download_athena_chir.disabled = True
         self.save_scaled_spectrum.disabled = True
         self.conv_box.layout.display = "none"
         self.experimental_widget.reset()
@@ -921,8 +1307,7 @@ class ResultsWidget(ipw.VBox):
 def _format_preview_rows(rows) -> str:
     """Format numeric rows for the compact HTML data previews."""
     return "".join(
-        "<tr>" + "".join(f"<td>{value:.7g}</td>" for value in row) + "</tr>"
-        for row in rows
+        "<tr>" + "".join(f"<td>{value:.7g}</td>" for value in row) + "</tr>" for row in rows
     )
 
 

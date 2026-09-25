@@ -66,46 +66,63 @@ def detect_runtime(container_name: str) -> str:
     sys.exit(1)
 
 
-def _resolve_sibling_repos(workspace_root: Path, dev_mode: bool) -> tuple[Path, Path, Path]:
-    """Return the sibling checkout paths, checking they exist when in dev mode.
+def _resolve_sibling_repos(workspace_root: Path, dev_mode: bool) -> dict[str, Path]:
+    """Return a mapping of found sibling repo names to their local paths.
 
-    In dev mode these are bind-mounted and editable-installed, so a missing one is
-    a hard error rather than something to discover halfway through the build.
+    In dev mode, any sibling repo present locally is bind-mounted and
+    editable-installed. Sibling repos not found locally fall back to
+    PyPI/GitHub installs.
     """
-    dirs = {
-        "alc-dls-exafs": workspace_root / "alc-dls-exafs",
-        "stfc_aiida-feff": workspace_root / "stfc_aiida-feff",
-        "alc-aiidalab-widgets": workspace_root / "alc-aiidalab-widgets",
+    candidates = {
+        "alc-dls-exafs": [workspace_root / "alc-dls-exafs"],
+        "stfc_aiida-feff": [workspace_root / "stfc_aiida-feff", workspace_root / "aiida-feff"],
+        "alc-aiidalab-widgets": [workspace_root / "alc-aiidalab-widgets"],
     }
+    found: dict[str, Path] = {}
+    for name, paths in candidates.items():
+        for path in paths:
+            if path.is_dir():
+                found[name] = path
+                break
 
     if not dev_mode:
-        print("=== Sibling dependencies will be installed from GitHub (main) ===")
-        return tuple(dirs.values())  # type: ignore[return-value]
+        print("=== Non-dev mode: sibling dependencies will be installed from PyPI/GitHub ===")
+        return {}
 
-    missing = [name for name, path in dirs.items() if not path.is_dir()]
-    if missing:
-        for name in missing:
-            print(
-                f"ERROR: AIIDALAB_FEFF_DEV=1 but sibling directory {name!r} "
-                f"not found at {dirs[name]}"
-            )
-        sys.exit(1)
-
-    print("=== Dev mode: local sibling repos will be bind-mounted + editable-installed ===")
-    return tuple(dirs.values())  # type: ignore[return-value]
+    for name, path in found.items():
+        print(
+            f"=== Dev mode: found sibling {name!r} at {path} (will bind-mount + editable-install) ==="
+        )
+    return found
 
 
-def main():
+@click.command()
+@click.option("--profile", "-p", default=None, help="AiiDAlab profile name.")
+@click.option("--port", default=None, type=int, help="Host port to bind.")
+@click.option("--home-mount", default=None, help="Docker volume name for /home/jovyan.")
+@click.option(
+    "--dev/--no-dev",
+    default=None,
+    help="Enable/disable dev mode (bind-mount local sibling repos).",
+)
+def main(profile: str | None, port: int | None, home_mount: str | None, dev: bool | None):
     """Configure, start, and initialize the AiiDAlab Launch container."""
+    # Ensure ~/.local/bin is in PATH so aiidalab-launch can be located
+    local_bin = str(Path.home() / ".local" / "bin")
+    if local_bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
+
     script_dir = Path(__file__).resolve().parent
     repo_dir = script_dir.parent
     workspace_root = repo_dir.parent
 
     # Dev mode: bind-mount local sibling repos and editable-install them.
-    # Default (no env var, or AIIDALAB_FEFF_DEV=0): install siblings from GitHub.
-    dev_mode = os.environ.get("AIIDALAB_FEFF_DEV", "").strip() in ("1", "true", "True")
+    if dev is not None:
+        dev_mode = dev
+    else:
+        dev_mode = os.environ.get("AIIDALAB_FEFF_DEV", "1").strip().lower() in ("1", "true")
 
-    alc_dir, feff_dir, widgets_dir = _resolve_sibling_repos(workspace_root, dev_mode)
+    local_siblings = _resolve_sibling_repos(workspace_root, dev_mode)
 
     # 1. Locate and load config.toml
     config_dir = Path(click.get_app_dir("org.aiidalab.aiidalab_launch"))
@@ -119,33 +136,40 @@ def main():
     if "profiles" not in config:
         config["profiles"] = {}
 
-    # 2. Configure or create 'aiidalab-feff' profile
-    profile_name = "aiidalab-feff"
+    # 2. Configure or update profile
+    profile_name = profile or os.environ.get("AIIDALAB_PROFILE", "aiidalab-feff")
     if profile_name not in config["profiles"]:
         print(f"Adding new profile '{profile_name}' to AiiDAlab Launch config...")
-        # Determine non-conflicting port
-        ports = [p.get("port", 8888) for p in config["profiles"].values()]
-        port = max(ports) + 1 if ports else 8889
+        config_port = port or int(os.environ.get("AIIDALAB_PORT", 0))
+        if not config_port:
+            ports = [p.get("port", 8888) for p in config["profiles"].values()]
+            config_port = max(ports) + 1 if ports else 8889
+        config_home = home_mount or os.environ.get(
+            "AIIDALAB_HOME_MOUNT", f"aiidalab_{profile_name}_home"
+        )
         config["profiles"][profile_name] = {
-            "port": port,
+            "port": config_port,
             "default_apps": [],
             "system_user": "jovyan",
-            "home_mount": f"aiidalab_{profile_name}_home",
+            "home_mount": config_home,
         }
+    else:
+        if port:
+            config["profiles"][profile_name]["port"] = port
+        if home_mount:
+            config["profiles"][profile_name]["home_mount"] = home_mount
 
-    profile = config["profiles"][profile_name]
-    profile["image"] = "ghcr.io/stfc/alc-ux/base:py310"
+    prof = config["profiles"][profile_name]
+    prof["image"] = "ghcr.io/stfc/alc-ux/base:py310"
 
     # Set up bind mounts. The app itself is ALWAYS bind-mounted (it must be
     # at /home/jovyan/apps/aiidalab-feff for AiiDAlab app discovery and is
-    # editable-installed). Sibling repos are ONLY bind-mounted in
-    # dev mode; in default mode they are installed from GitHub.
+    # editable-installed). Sibling repos are bind-mounted in dev mode when found.
     extra_mounts = [f"{repo_dir}:/home/jovyan/apps/aiidalab-feff:rw"]
     if dev_mode:
-        extra_mounts.append(f"{alc_dir}:/tmp/src/alc-dls-exafs:rw")
-        extra_mounts.append(f"{feff_dir}:/tmp/src/stfc_aiida-feff:rw")
-        extra_mounts.append(f"{widgets_dir}:/tmp/src/alc-aiidalab-widgets:rw")
-    profile["extra_mounts"] = extra_mounts
+        for name, p in local_siblings.items():
+            extra_mounts.append(f"{p}:/tmp/src/{name}:rw")
+    prof["extra_mounts"] = extra_mounts
 
     # Save config
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -184,22 +208,36 @@ def main():
     # pre-existing checkpoint directories world-writable so jovyan can save.
     chmod_paths = ["/home/jovyan/apps/aiidalab-feff"]
     if dev_mode:
-        chmod_paths.append("/tmp/src/alc-dls-exafs")
-        chmod_paths.append("/tmp/src/stfc_aiida-feff")
-        chmod_paths.append("/tmp/src/alc-aiidalab-widgets")
-    subprocess.run([
-        runtime, "exec", "--user", "root", container_name,
-        "find", *chmod_paths,
-        "-name", ".ipynb_checkpoints", "-type", "d",
-        "-exec", "chmod", "777", "{}", "+",
-    ], check=False)
+        for name in local_siblings:
+            chmod_paths.append(f"/tmp/src/{name}")
+    subprocess.run(
+        [
+            runtime,
+            "exec",
+            "--user",
+            "root",
+            container_name,
+            "find",
+            *chmod_paths,
+            "-name",
+            ".ipynb_checkpoints",
+            "-type",
+            "d",
+            "-exec",
+            "chmod",
+            "777",
+            "{}",
+            "+",
+        ],
+        check=False,
+    )
 
     # 4. Install dependencies inside the container.
     #
     # The app itself is ALWAYS editable-installed from the bind-mount.
-    # The sibling dependencies depend on the mode:
-    #   - Default: pip install git+https://github.com/stfc/<repo>.git (non-editable)
-    #   - Dev (AIIDALAB_FEFF_DEV=1): pip install -e /tmp/src/<repo> (editable, bind-mounted)
+    # The sibling dependencies depend on whether they exist locally:
+    #   - If found locally in dev mode: editable-installed from bind-mount
+    #   - Otherwise: installed from PyPI / GitHub
     #
     # NOTE: this must run as root. The bind-mounted source trees are owned by the
     # host user, whose uid generally differs from the container's jovyan user
@@ -215,15 +253,29 @@ def main():
     print("\n=== Installing packages inside the container (as root) ===")
     sibling_targets = []
     if dev_mode:
-        print("  Dev mode: editable-installing siblings from bind-mounts")
-        sibling_targets = [
-            "-e", "/tmp/src/alc-dls-exafs",
-            "-e", "/tmp/src/stfc_aiida-feff",
-            "-e", "/tmp/src/alc-aiidalab-widgets",
-        ]
+        if "alc-dls-exafs" in local_siblings:
+            print("  Dev mode: editable-installing alc-dls-exafs from bind-mount")
+            sibling_targets.extend(["-e", "/tmp/src/alc-dls-exafs"])
+        else:
+            print("  Installing md-exafs from PyPI")
+            sibling_targets.append("md-exafs>=0.3.0,<0.4")
+
+        if "stfc_aiida-feff" in local_siblings:
+            print("  Dev mode: editable-installing stfc_aiida-feff from bind-mount")
+            sibling_targets.extend(["-e", "/tmp/src/stfc_aiida-feff"])
+        else:
+            print("  Installing aiida-feff from GitHub")
+            sibling_targets.append(_FEFF_GIT_URL)
+
+        if "alc-aiidalab-widgets" in local_siblings:
+            print("  Dev mode: editable-installing alc-aiidalab-widgets from bind-mount")
+            sibling_targets.extend(["-e", "/tmp/src/alc-aiidalab-widgets"])
+        else:
+            print("  Installing alc-aiidalab-widgets from PyPI")
+            sibling_targets.append("alc-aiidalab-widgets")
     else:
-        print("  Installing siblings from GitHub")
-        sibling_targets = [_ALC_GIT_URL, _FEFF_GIT_URL, _WIDGETS_GIT_URL]
+        print("  Installing siblings from PyPI / GitHub")
+        sibling_targets = ["md-exafs>=0.3.0,<0.4", _FEFF_GIT_URL, "alc-aiidalab-widgets"]
 
     install_cmd = [
         runtime,
@@ -237,7 +289,8 @@ def main():
         "--no-cache-dir",
         "--no-user",
         *sibling_targets,
-        "-e", "/home/jovyan/apps/aiidalab-feff",
+        "-e",
+        "/home/jovyan/apps/aiidalab-feff",
     ]
     subprocess.run(install_cmd, check=True)
 
@@ -249,27 +302,49 @@ def main():
     # pick up the newly installed plugins. (setup-aiida.sh below only starts
     # the daemon if it is not already running, so it will skip — that's fine.)
     print("\n=== Restarting AiiDA daemon to load freshly installed plugins ===")
-    blas_env_args = [
-        arg for key, val in _BLAS_THREAD_ENV.items() for arg in ("-e", f"{key}={val}")
-    ]
-    subprocess.run([
-        runtime, "exec", *blas_env_args, container_name,
-        "verdi", "daemon", "restart",
-    ], check=False)
+    blas_env_args = [arg for key, val in _BLAS_THREAD_ENV.items() for arg in ("-e", f"{key}={val}")]
+    subprocess.run(
+        [
+            runtime,
+            "exec",
+            *blas_env_args,
+            container_name,
+            "verdi",
+            "daemon",
+            "restart",
+        ],
+        check=False,
+    )
 
     # 5. Start the AiiDA REST API for the aiida-explorer button
     print("\n=== Starting AiiDA REST API inside the container ===")
-    subprocess.run([
-        "aiidalab-launch", "exec", "-p", profile_name, "--",
-        "bash", "/home/jovyan/apps/aiidalab-feff/containers/start_restapi.sh"
-    ], check=True)
+    subprocess.run(
+        [
+            "aiidalab-launch",
+            "exec",
+            "-p",
+            profile_name,
+            "--",
+            "bash",
+            "/home/jovyan/apps/aiidalab-feff/containers/start_restapi.sh",
+        ],
+        check=True,
+    )
 
     # 5b. Start the Marimo server for the Debye-Waller notebook
     print("\n=== Starting Marimo server inside the container ===")
-    subprocess.run([
-        "aiidalab-launch", "exec", "-p", profile_name, "--",
-        "bash", "/home/jovyan/apps/aiidalab-feff/containers/start_marimo.sh"
-    ], check=False)
+    subprocess.run(
+        [
+            "aiidalab-launch",
+            "exec",
+            "-p",
+            profile_name,
+            "--",
+            "bash",
+            "/home/jovyan/apps/aiidalab-feff/containers/start_marimo.sh",
+        ],
+        check=False,
+    )
 
     # 6. Expose the REST API on a host port via a proxy container.
     #
@@ -278,8 +353,8 @@ def main():
     # small user-defined network, attach the AiiDAlab container to it, and run
     # the socat proxy there so it can reach the container by name.
     print("\n=== Exposing AiiDA REST API on host port 5050 ===")
-    proxy_name = "aiidalab-feff-restapi-proxy"
-    proxy_network = "aiidalab-feff-net"
+    proxy_name = f"{profile_name}-restapi-proxy"
+    proxy_network = f"{profile_name}-net"
 
     subprocess.run(
         [runtime, "network", "create", proxy_network],
@@ -291,38 +366,44 @@ def main():
         check=False,
     )
     subprocess.run([runtime, "rm", "-f", proxy_name], check=False)
-    subprocess.run([
-        runtime,
-        "run",
-        "-d",
-        "--name",
-        proxy_name,
-        "--network",
-        proxy_network,
-        "-p",
-        "5050:5000",
-        "alpine/socat",
-        "TCP-LISTEN:5000,fork",
-        f"TCP:{container_name}:5000",
-    ], check=True)
+    subprocess.run(
+        [
+            runtime,
+            "run",
+            "-d",
+            "--name",
+            proxy_name,
+            "--network",
+            proxy_network,
+            "-p",
+            "5050:5000",
+            "alpine/socat",
+            "TCP-LISTEN:5000,fork",
+            f"TCP:{container_name}:5000",
+        ],
+        check=True,
+    )
 
     print("\n=== Exposing Marimo server on host port 2718 ===")
-    marimo_proxy_name = "aiidalab-feff-marimo-proxy"
+    marimo_proxy_name = f"{profile_name}-marimo-proxy"
     subprocess.run([runtime, "rm", "-f", marimo_proxy_name], check=False)
-    subprocess.run([
-        runtime,
-        "run",
-        "-d",
-        "--name",
-        marimo_proxy_name,
-        "--network",
-        proxy_network,
-        "-p",
-        "2718:2718",
-        "alpine/socat",
-        "TCP-LISTEN:2718,fork",
-        f"TCP:{container_name}:2718",
-    ], check=False)
+    subprocess.run(
+        [
+            runtime,
+            "run",
+            "-d",
+            "--name",
+            marimo_proxy_name,
+            "--network",
+            proxy_network,
+            "-p",
+            "2718:2718",
+            "alpine/socat",
+            "TCP-LISTEN:2718,fork",
+            f"TCP:{container_name}:2718",
+        ],
+        check=False,
+    )
 
     # 7. Configure AiiDA ( localhost computer, codes, and daemon )
     print("\n=== Running AiiDA configuration inside the container ===")
@@ -348,16 +429,24 @@ def main():
     # Fix: switch the shebang to bash so BASH_SOURCE works. (Inside the image
     # this file is root-owned, so the sed runs as root.) Idempotent.
     print("\n=== Patching FEFF8l launcher shell compatibility bug ===")
-    subprocess.run([
-        runtime, "exec", "--user", "root", container_name,
-        "bash", "-lc",
-        "set -e; F=$(command -v feff8l.sh || "
-        "echo /opt/conda/lib/python3.10/site-packages/larch/bin/linux64/feff8l.sh); "
-        "D=$(dirname \"$F\"); "
-        "if head -1 \"$F\" | grep -q '#!/bin/sh'; then "
-        "sed -i \"1s|#!/bin/sh|#!/usr/bin/env bash|\" \"$F\" && echo patched \"$F\"; "
-        "else echo already-patched \"$F\"; fi",
-    ], check=False)
+    subprocess.run(
+        [
+            runtime,
+            "exec",
+            "--user",
+            "root",
+            container_name,
+            "bash",
+            "-lc",
+            "set -e; F=$(command -v feff8l.sh || "
+            "echo /opt/conda/lib/python3.10/site-packages/larch/bin/linux64/feff8l.sh); "
+            'D=$(dirname "$F"); '
+            "if head -1 \"$F\" | grep -q '#!/bin/sh'; then "
+            'sed -i "1s|#!/bin/sh|#!/usr/bin/env bash|" "$F" && echo patched "$F"; '
+            'else echo already-patched "$F"; fi',
+        ],
+        check=False,
+    )
 
     # 8. Retrieve URL
     try:
@@ -372,7 +461,7 @@ def main():
             # Extract the URL from status output (handles tabular status format)
             url = None
             for line in status_proc.stdout.splitlines():
-                if "aiidalab-feff" in line and "http://" in line:
+                if profile_name in line and "http://" in line:
                     for part in line.split():
                         if part.startswith("http://") or part.startswith("https://"):
                             url = part
@@ -392,8 +481,8 @@ def main():
                 # its path relative to notebook_dir is "apps/aiidalab-feff/main.ipynb"
                 # and the appmode URL becomes "/apps/apps/aiidalab-feff/main.ipynb".
                 # JupyterLab uses its own "/lab/tree/<relative_path>" route.
-                app_url = f"http://localhost:{profile['port']}/apps/apps/aiidalab-feff/main.ipynb"
-                lab_url = f"http://localhost:{profile['port']}/lab/tree/apps/aiidalab-feff/main.ipynb"
+                app_url = f"http://localhost:{prof['port']}/apps/apps/aiidalab-feff/main.ipynb"
+                lab_url = f"http://localhost:{prof['port']}/lab/tree/apps/aiidalab-feff/main.ipynb"
                 if token:
                     app_url = f"{app_url}?{token}"
                     lab_url = f"{lab_url}?{token}"
