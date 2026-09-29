@@ -65,21 +65,79 @@ def _count_batch_snaps(node) -> int | None:
     return sum(1 for key in dir(xas) if key.startswith("snap_"))
 
 
-def _job_record(child) -> dict | None:
+def _batch_link_maps(child_pks: list[int]) -> tuple[set[int], dict[int, int], dict[int, int]]:
+    """Resolve, in three queries, the per-child link facts ``_job_record`` needs.
+
+    Doing this per child is an N+1: ``"frame_idx" in child.inputs``,
+    ``child.inputs.frame_indices`` and ``dir(child.outputs.xas_data)`` each issue
+    their own link query, which measured 1.9 s for a 68-child run. Returns
+    ``(pks that have a frame_idx input, pk -> len(frame_indices), pk -> #snap
+    outputs)``.
+    """
+    has_frame_idx: set[int] = set()
+    frame_counts: dict[int, int] = {}
+    snap_counts: dict[int, int] = {}
+    if not child_pks:
+        return has_frame_idx, frame_counts, snap_counts
+
+    # Inputs labelled ``frame_idx`` (marks a real per-snapshot FeffCalculation).
+    qb = QueryBuilder()
+    qb.append(orm.Node, filters={"id": {"in": child_pks}}, tag="job", project=["id"])
+    qb.append(orm.Data, with_outgoing="job", edge_filters={"label": "frame_idx"}, project=["id"])
+    for pk, _ in qb.all():
+        has_frame_idx.add(int(pk))
+
+    # ``frame_indices`` input lists (how many snapshots a batch job covers).
+    qb = QueryBuilder()
+    qb.append(orm.Node, filters={"id": {"in": child_pks}}, tag="job", project=["id"])
+    qb.append(
+        orm.List,
+        with_outgoing="job",
+        edge_filters={"label": "frame_indices"},
+        project=["attributes.list"],
+    )
+    for pk, values in qb.all():
+        frame_counts[int(pk)] = len(values or [])
+
+    # ``xas_data__snap_*`` outputs (how many results a batch job actually produced).
+    qb = QueryBuilder()
+    qb.append(orm.Node, filters={"id": {"in": child_pks}}, tag="job", project=["id"])
+    qb.append(
+        orm.Data,
+        with_incoming="job",
+        edge_filters={"label": {"like": "xas\\_data\\_\\_snap\\_%"}},
+        project=["id"],
+    )
+    for pk, _ in qb.all():
+        snap_counts[int(pk)] = snap_counts.get(int(pk), 0) + 1
+
+    return has_frame_idx, frame_counts, snap_counts
+
+
+def _job_record(child, link_maps=None) -> dict | None:
     """Summarize one child FEFF job for progress accounting.
 
     Returns None for jobs that do not represent a (frame, site) calculation,
     such as potentials-only precompute runs.
+
+    ``link_maps`` is the batched ``_batch_link_maps`` result. When omitted the
+    per-child link lookups are done directly (slower, but keeps this function
+    usable on its own).
     """
     label = str(getattr(child, "label", "") or "")
     if label.startswith("pot_"):
         return None
     process_label = getattr(child, "process_label", None)
     is_batch = process_label == "FeffBatchCalculation"
+    pk = getattr(child, "pk", None)
+    has_frame_idx, frame_counts, snap_counts = link_maps or (None, None, None)
     if process_label == "FeffCalculation":
         # Potentials-only jobs carry no frame index; skip if we can tell.
         try:
-            if "frame_idx" not in child.inputs:
+            if has_frame_idx is not None:
+                if pk not in has_frame_idx:
+                    return None
+            elif "frame_idx" not in child.inputs:
                 return None
         except Exception:  # noqa: BLE001
             pass
@@ -89,13 +147,18 @@ def _job_record(child) -> dict | None:
 
     if is_batch:
         try:
-            covered = len(child.inputs.frame_indices.get_list())
+            if frame_counts is not None:
+                covered = frame_counts.get(pk, 0)
+            else:
+                covered = len(child.inputs.frame_indices.get_list())
         except Exception:  # noqa: BLE001
             covered = 0
         done_snaps = None
         if state == "finished":
             if ok:
-                count = _count_batch_snaps(child)
+                count = (
+                    snap_counts.get(pk, 0) if snap_counts is not None else _count_batch_snaps(child)
+                )
                 done_snaps = count if count else covered
             else:
                 done_snaps = 0
@@ -154,7 +217,13 @@ def _collect_jobs(process_node) -> list[dict]:
             for child in getattr(process_node, "called", [])
             if getattr(child, "process_label", None) in _JOB_LABELS
         ]
-    return [record for child in children if (record := _job_record(child)) is not None]
+
+    try:
+        link_maps = _batch_link_maps([c.pk for c in children if getattr(c, "pk", None)])
+    except Exception:  # noqa: BLE001
+        link_maps = None  # fall back to per-child lookups inside _job_record
+
+    return [record for child in children if (record := _job_record(child, link_maps)) is not None]
 
 
 def _int_like_site_count(spec) -> int | None:

@@ -110,6 +110,10 @@ def _average_xas_on_common_k(xas_nodes):
 class ResultsWidget(ipw.VBox):
     """Widget for displaying EXAFS calculation results."""
 
+    TAB_SPECTRUM = 0
+    TAB_CONVERGENCE = 1
+    TAB_PATHS = 2
+
     def __init__(self, results_model: ResultsModel):
         self.results_model = results_model
 
@@ -507,6 +511,16 @@ class ResultsWidget(ipw.VBox):
         self.tabs.set_title(1, "Convergence")
         self.tabs.set_title(2, "Path contributions")
 
+        # Lazy tabs. Rendering Convergence and especially Path contributions is
+        # expensive (the paths tab materialises the whole HDF5 archive out of the
+        # AiiDA repository, groups tens of thousands of paths and builds an Altair
+        # chart — measured at 4.5 s on a 34k-path run, and ~1.5 s even on a 131-path
+        # one), and neither is visible when results first open. _render now only
+        # draws the Spectrum tab and marks the others dirty; they are drawn the
+        # first time the user selects them.
+        self._dirty_tabs: set[int] = set()
+        self.tabs.observe(self._on_tab_selected, names="selected_index")
+
         self.reset_button = ipw.Button(
             description="Refresh results",
             icon="refresh",
@@ -544,8 +558,12 @@ class ResultsWidget(ipw.VBox):
         )
 
         self.results_model.observe(self._on_results_change, names="averaged_xas")
-        self.results_model.observe(self._on_results_change, names="path_contributions")
         self.results_model.observe(self._on_results_change, names="experimental_xas")
+        # ``path_contributions`` only feeds the Path contributions tab, so it just
+        # invalidates that tab. Routing it through a full _render used to double
+        # the render count, because _populate_results sets it alongside
+        # ``averaged_xas`` and both notifications fire.
+        self.results_model.observe(self._on_path_contributions_change, names="path_contributions")
 
         self._render()
 
@@ -573,8 +591,44 @@ class ResultsWidget(ipw.VBox):
         if change["new"] is not None:
             self._render()
 
+    def _on_path_contributions_change(self, change):
+        if change["new"] is not None:
+            self._invalidate_tab(self.TAB_PATHS)
+
     def _on_refresh(self, _):
         self._render()
+
+    # ── lazy tab rendering ────────────────────────────────────────────────
+    _PENDING_TAB_HTML = (
+        "<div style='padding:16px;color:var(--feff-ink-muted, #555);'>"
+        "Select this tab to load {what}.</div>"
+    )
+
+    def _invalidate_tab(self, index: int) -> None:
+        """Mark a deferred tab as needing a redraw, drawing it now if visible."""
+        self._dirty_tabs.add(index)
+        if index == self.TAB_PATHS:
+            # Drop the cached-source guard so _render_paths actually rebuilds
+            # when the tab is opened, and show why the tab is empty until then.
+            self._current_paths_source = None
+            self.paths_tab.children = [
+                ipw.HTML(self._PENDING_TAB_HTML.format(what="scattering path contributions"))
+            ]
+        if self.tabs.selected_index == index:
+            self._render_tab(index)
+
+    def _render_tab(self, index: int) -> None:
+        """Draw a deferred tab if it is dirty, then mark it clean."""
+        if index not in self._dirty_tabs:
+            return
+        self._dirty_tabs.discard(index)
+        if index == self.TAB_CONVERGENCE:
+            self._render_convergence()
+        elif index == self.TAB_PATHS:
+            self._render_paths()
+
+    def _on_tab_selected(self, change):
+        self._render_tab(change.get("new"))
 
     def _on_chi_controls_change(self, _):
         """k-weight changed → redraw both chi(k) (weighted) and chi(R) (re-FT)."""
@@ -586,13 +640,13 @@ class ResultsWidget(ipw.VBox):
         self._render_chi_k()
         self._render_chi_r()
         self._render_chi_r_export()
-        self._render_convergence()
+        self._invalidate_tab(self.TAB_CONVERGENCE)
 
     def _on_legend_change(self, _):
         """Apply the legend preference to all spectrum and convergence plots."""
         self._render_chi_k()
         self._render_chi_r()
-        self._render_convergence()
+        self._invalidate_tab(self.TAB_CONVERGENCE)
 
     def _on_comparison_change(self, _):
         """Refresh the live experimental/simulated comparison."""
@@ -646,6 +700,7 @@ class ResultsWidget(ipw.VBox):
             self._clear_figure(self._ax_chi_r)
             self._clear_figure(self._ax_conv)
             self._clear_figure(self._ax_conv_resid)
+            self._dirty_tabs.clear()
             self.conv_box.layout.display = "none"
             self.export_spectrum.options = []
             self.chi_k_preview.value = "<em>No spectrum data available.</em>"
@@ -692,8 +747,10 @@ class ResultsWidget(ipw.VBox):
         self.save_scaled_spectrum.disabled = self._selected_export_spectrum() is None
         self._render_chi_k()
         self._render_chi_r()
-        self._render_convergence()
-        self._render_paths()
+        # Convergence and Path contributions are drawn on demand — see
+        # _on_tab_selected. Only the currently visible tab is rendered now.
+        self._invalidate_tab(self.TAB_CONVERGENCE)
+        self._invalidate_tab(self.TAB_PATHS)
 
         if self.results_model.n_failed is not None and self.results_model.n_failed > 0:
             proc_node = self.results_model.process_node
@@ -1286,6 +1343,7 @@ class ResultsWidget(ipw.VBox):
         self._clear_figure(self._ax_conv_resid)
         self._current_paths_source = None
         self.paths_tab.children = []
+        self._dirty_tabs.clear()
         self.export_spectrum.options = []
         self.chi_k_preview.value = "<em>No spectrum data available.</em>"
         self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"

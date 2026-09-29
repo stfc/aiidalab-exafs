@@ -205,6 +205,13 @@ class ProcessWidget(ipw.VBox):
         self.details_accordion = ipw.Accordion(children=[self.monitor_output])
         self.details_accordion.set_title(0, "AiiDA process details (troubleshooting)")
         self.details_accordion.selected_index = None
+        # Building ProcessNodeViewerWidget costs ~0.4-2 s (it renders the full
+        # provenance view and the whole REPORT log), and the accordion starts
+        # collapsed, so nobody sees it. Render it the first time the user expands
+        # the accordion instead of on every progress refresh.
+        self._pending_details_node = None
+        self._rendered_details_pk = None
+        self.details_accordion.observe(self._on_details_accordion, names="selected_index")
 
         action_row = ipw.HBox(
             [self.explorer_button, self.view_results_button],
@@ -288,12 +295,36 @@ class ProcessWidget(ipw.VBox):
             "</div>"
         )
 
+        # Deferred: only built when the troubleshooting accordion is opened.
+        self._pending_details_node = process_node
+        if self.details_accordion.selected_index == 0:
+            self._render_details(process_node)
+        else:
+            self._rendered_details_pk = None
+
+    def _on_details_accordion(self, change):
+        """Build the provenance viewer lazily, the first time the panel is opened."""
+        if change.get("new") != 0:
+            return
+        self._render_details(self._pending_details_node)
+
+    def _render_details(self, process_node):
+        """Render the AiiDA provenance viewer into the troubleshooting panel."""
+        if process_node is None:
+            return
+        pk = getattr(process_node, "pk", None)
+        # A terminated node's provenance view never changes, so build it once.
+        # A running one is rebuilt on each poll so the REPORT log stays live.
+        terminated = bool(getattr(process_node, "is_terminated", False))
+        if terminated and pk is not None and pk == self._rendered_details_pk:
+            return
+        self._rendered_details_pk = pk if terminated else None
         with self.monitor_output:
             self.monitor_output.clear_output()
             try:
                 display(ProcessNodeViewerWidget(process_node))
-            except Exception:
-                print(f"Process {pk}: {status_text}")
+            except Exception:  # noqa: BLE001
+                print(f"Process {pk}: {_plain_state_info(process_node)[0]}")
 
     def _on_view_results_click(self, _):
         if self.on_results_loaded is not None:
@@ -373,11 +404,14 @@ class ProcessWidget(ipw.VBox):
         process_node = orm.load_node(process_node.pk)
         self.submission_model.process_node = process_node
 
-        self._render_process_view(process_node)
-
         if process_node.is_terminated:  # type: ignore[attr-defined]
+            # _on_finished renders the progress panel itself; rendering here too
+            # would run the (query-heavy) child-job census twice for every
+            # already-finished run that gets opened from the Runs tab.
             self._on_finished(process_node)
             return
+
+        self._render_process_view(process_node)
 
         # Poll in a background thread, but run every ORM access and widget
         # update back on the kernel's main thread: AiiDA's SQLAlchemy session
@@ -484,22 +518,12 @@ class ProcessWidget(ipw.VBox):
 
     def _populate_results(self, process_node):
         outputs = process_node.outputs
-        averaged_xas = {}
-        if hasattr(outputs, "averaged_xas"):
-            for key in dir(outputs.averaged_xas):
-                if key.startswith("site_") or key == "all":
-                    averaged_xas[key] = getattr(outputs.averaged_xas, key)
+        averaged_xas = _collect_averaged_xas(process_node)
 
         xas_grid = _extract_xas_grid(process_node)
         edge, absorber_label = _resolve_absorber_metadata(process_node, averaged_xas)
 
-        # Set the grid + metadata BEFORE averaged_xas: the ResultsWidget observes
-        # ``averaged_xas`` and its callback (_render → _populate_conv_selectors)
-        # reads xas_grid and edge/absorber_label, so they must be ready first.
-        self.results_model.xas_grid = xas_grid or None
-        self.results_model.edge = edge
-        self.results_model.absorber_label = absorber_label
-        self.results_model.is_ensemble = (
+        is_ensemble = (
             hasattr(process_node.inputs, "trajectory")
             or hasattr(process_node.inputs, "structures")
             or (
@@ -508,18 +532,66 @@ class ProcessWidget(ipw.VBox):
                 else len(self.input_model.get_structures() or {}) > 1
             )
         )
-        self.results_model.process_node = process_node
-        self.results_model.n_failed = outputs.n_failed.value if hasattr(outputs, "n_failed") else 0
-        if hasattr(outputs, "path_contributions"):
-            self.results_model.path_contributions = outputs.path_contributions
-        if hasattr(outputs, "archive"):
-            self.results_model.archive = outputs.archive
-        self.results_model.averaged_xas = averaged_xas
+
+        # Assign every trait in one notification batch. Each bare assignment
+        # fires ResultsWidget._on_results_change, and both ``path_contributions``
+        # and ``averaged_xas`` trigger a full _render; holding the notifications
+        # collapses that into a single render once all the traits are consistent.
+        # (This also preserves the old ordering requirement: _render reads
+        # xas_grid / edge / absorber_label, which are now guaranteed to be set.)
+        with self.results_model.hold_trait_notifications():
+            self.results_model.xas_grid = xas_grid or None
+            self.results_model.edge = edge
+            self.results_model.absorber_label = absorber_label
+            self.results_model.is_ensemble = is_ensemble
+            self.results_model.process_node = process_node
+            self.results_model.n_failed = (
+                outputs.n_failed.value if hasattr(outputs, "n_failed") else 0
+            )
+            if hasattr(outputs, "path_contributions"):
+                self.results_model.path_contributions = outputs.path_contributions
+            if hasattr(outputs, "archive"):
+                self.results_model.archive = outputs.archive
+            self.results_model.averaged_xas = averaged_xas
 
     def reset(self):
         self.status.clear()
         self.monitor_output.clear_output()
+        self._pending_details_node = None
+        self._rendered_details_pk = None
         self.submission_model.reset()
+
+
+def _collect_averaged_xas(process_node) -> dict:
+    """Return ``{"all"|"site_NNNN": XasData}`` for a workchain's averaged outputs.
+
+    ``dir(node.outputs.averaged_xas)`` followed by ``getattr`` per key is an N+1
+    query: the ``dir`` resolves the link labels and each ``getattr`` issues a
+    further link lookup. On a 92-site run that measured 2.1 s / 380 queries.
+    Fetching the outgoing links once and filtering the labels in Python is a
+    single query.
+    """
+    averaged_xas: dict = {}
+    try:
+        links = process_node.base.links.get_outgoing().all()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Fast averaged_xas link query failed; falling back: %s", exc)
+        outputs = process_node.outputs
+        if hasattr(outputs, "averaged_xas"):
+            for key in dir(outputs.averaged_xas):
+                if key.startswith("site_") or key == "all":
+                    averaged_xas[key] = getattr(outputs.averaged_xas, key)
+        return averaged_xas
+
+    prefix = "averaged_xas__"
+    for link in links:
+        label = link.link_label
+        if not label.startswith(prefix):
+            continue
+        key = label[len(prefix) :]
+        if key == "all" or key.startswith("site_"):
+            averaged_xas[key] = link.node
+    return averaged_xas
 
 
 def _extract_xas_grid(process_node) -> dict[tuple[int, int], object]:

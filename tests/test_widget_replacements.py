@@ -120,3 +120,53 @@ def test_create_new_calculation_button_with_messagebox():
     msg_box2.accept_btn.click()
     assert wizard.resets == 2
     assert len(btn_container.children) == 1
+
+
+def test_results_widget_defers_convergence_and_paths_tabs():
+    """Opening results must not render the Convergence / Path contributions tabs.
+
+    Those two tabs dominated the "Open results" latency (the paths tab alone
+    measured 4.5 s on a 34k-path run) even though neither is visible when the
+    results view first appears. They are marked dirty and drawn on selection.
+    """
+    from aiidalab_feff.results import ResultsWidget
+
+    model = ResultsModel()
+    widget = ResultsWidget(model)
+    calls = {"convergence": 0, "paths": 0}
+    widget._render_convergence = lambda: calls.__setitem__("convergence", calls["convergence"] + 1)
+    widget._render_paths = lambda: calls.__setitem__("paths", calls["paths"] + 1)
+
+    widget.tabs.selected_index = widget.TAB_SPECTRUM
+    widget._invalidate_tab(widget.TAB_CONVERGENCE)
+    widget._invalidate_tab(widget.TAB_PATHS)
+    assert calls == {"convergence": 0, "paths": 0}
+    assert widget._dirty_tabs == {widget.TAB_CONVERGENCE, widget.TAB_PATHS}
+
+    # Selecting a tab renders it exactly once; re-selecting reuses the render.
+    widget.tabs.selected_index = widget.TAB_CONVERGENCE
+    assert calls == {"convergence": 1, "paths": 0}
+    widget.tabs.selected_index = widget.TAB_SPECTRUM
+    widget.tabs.selected_index = widget.TAB_CONVERGENCE
+    assert calls == {"convergence": 1, "paths": 0}
+
+    widget.tabs.selected_index = widget.TAB_PATHS
+    assert calls == {"convergence": 1, "paths": 1}
+
+    # Invalidating the visible tab redraws it immediately.
+    widget._invalidate_tab(widget.TAB_PATHS)
+    assert calls == {"convergence": 1, "paths": 2}
+
+
+def test_process_widget_defers_provenance_viewer_until_accordion_opens():
+    """The AiiDA provenance viewer is only built when its accordion is expanded."""
+    widget = ProcessWidget(InputModel(), WorkflowModel(), SubmissionModel(), ResultsModel())
+    rendered = []
+    widget._render_details = rendered.append
+
+    assert widget.details_accordion.selected_index is None
+    widget._pending_details_node = object()
+    assert rendered == []
+
+    widget.details_accordion.selected_index = 0
+    assert rendered == [widget._pending_details_node]

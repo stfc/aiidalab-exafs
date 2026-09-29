@@ -221,6 +221,52 @@ def test_job_record_skips_potentials_and_requires_frame_idx():
     assert record["ok"] is True
 
 
+def test_job_record_uses_batched_link_maps_instead_of_per_child_queries():
+    """With link maps supplied, _job_record must not touch child.inputs/outputs.
+
+    The batched maps exist to kill an N+1 query; if _job_record silently fell
+    back to per-child link access the speed-up would vanish unnoticed.
+    """
+    from aiidalab_feff.running_tasks import _job_record
+
+    class Exploding:
+        """Any attribute access means we hit the database per child."""
+
+        def __getattr__(self, name):
+            raise AssertionError(f"per-child link access: {name}")
+
+        def __contains__(self, item):
+            raise AssertionError(f"per-child link access: {item}")
+
+    batch = SimpleNamespace(
+        label="feff_batch_0000",
+        process_label="FeffBatchCalculation",
+        process_state=SimpleNamespace(value="finished"),
+        is_finished_ok=True,
+        pk=7,
+        inputs=Exploding(),
+        outputs=Exploding(),
+    )
+    # has_frame_idx, frame_counts (pk -> covered), snap_counts (pk -> produced)
+    link_maps = (set(), {7: 10}, {7: 8})
+    record = _job_record(batch, link_maps)
+    assert record["covered"] == 10
+    assert record["done_snaps"] == 8
+
+    # A serial job whose pk is absent from has_frame_idx is potentials-only.
+    serial = SimpleNamespace(
+        label="",
+        process_label="FeffCalculation",
+        process_state=SimpleNamespace(value="finished"),
+        is_finished_ok=True,
+        pk=9,
+        inputs=Exploding(),
+        outputs=Exploding(),
+    )
+    assert _job_record(serial, ({}, {}, {})) is None
+    assert _job_record(serial, ({9}, {}, {}))["covered"] == 1
+
+
 def test_create_breadcrumbs_wires_clicks():
     """Breadcrumb buttons forward their step index to the callback."""
     from aiidalab_feff.common.navigation import create_breadcrumbs
