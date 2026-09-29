@@ -14,6 +14,7 @@ from alc_aiidalab_widgets.widgets.status import Status
 from alc_aiidalab_widgets.widgets.structure import StructureViewWidget
 
 from aiidalab_feff.running_tasks import (
+    _TERMINAL_STATES,
     WORKCHAIN_LABEL,
     _count_structures,
     _reference_structure,
@@ -244,11 +245,31 @@ class ResultsLibraryWidget(ipw.VBox):
                 self.status,
             ]
         )
-        self._search()
+        # The Runs tab is not the tab the app opens on, and building the table
+        # summarises every workchain in the range (reading inputs, a reference
+        # structure and a frame count per row, 7 s of app startup). At
+        # construction we only need the badge count, which is one query; the
+        # table is built when the tab is first selected, via refresh().
+        self._count_running()
 
     def refresh(self, _=None):
         """Public alias for refresh."""
         self._search()
+
+    def _count_running(self) -> None:
+        """Set ``last_count`` from a single projection, without building the table."""
+        try:
+            query = QueryBuilder()
+            query.append(
+                WorkChainNode,
+                filters={"attributes.process_label": WORKCHAIN_LABEL},
+                project=["attributes.process_state"],
+            )
+            self.last_count = sum(
+                1 for (state,) in query.all() if str(state or "") not in _TERMINAL_STATES
+            )
+        except Exception:  # noqa: BLE001
+            self.last_count = None
 
     def _search(self, _=None):
         """Query and display both running and finished workflows."""

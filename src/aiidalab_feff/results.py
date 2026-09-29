@@ -17,6 +17,7 @@ from alc_aiidalab_widgets.widgets.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 from md_exafs.spectra import average_chi_arrays
 
+from aiidalab_feff.common.lazy import LazyWidget
 from aiidalab_feff.experimental import ExperimentalSpectrumWidget
 from aiidalab_feff.models import ResultsModel
 from aiidalab_feff.running_tasks import _reference_structure
@@ -335,11 +336,19 @@ class ResultsWidget(ipw.VBox):
 
         self.convergence_tab = ipw.VBox([self.conv_box, self._fig_conv.canvas])
         self.paths_tab = ipw.VBox()
-        self.experimental_widget = ExperimentalSpectrumWidget(results_model)
-        self.experimental_reference = ipw.Accordion([self.experimental_widget], selected_index=None)
+        # Built on first expand: ExperimentalSpectrumWidget embeds a database
+        # selector that queries every node in the date range from its
+        # constructor, which measured 42 s of a 59 s app startup for a panel
+        # that starts collapsed.
+        self._experimental_lazy = LazyWidget(
+            lambda: ExperimentalSpectrumWidget(results_model),
+            placeholder="<em>Loading…</em>",
+        )
+        self.experimental_reference = ipw.Accordion([self._experimental_lazy], selected_index=None)
         self.experimental_reference.set_title(
             0, "+ Add experimental reference spectrum (Athena, XDI, CSV, DAT)"
         )
+        self.experimental_reference.observe(self._on_experimental_accordion, names="selected_index")
         self.export_spectrum = ipw.Dropdown(
             description="Spectrum:",
             options=[],
@@ -590,6 +599,15 @@ class ResultsWidget(ipw.VBox):
 
         if change["new"] is not None:
             self._render()
+
+    @property
+    def experimental_widget(self):
+        """The experimental-spectrum panel, constructed on first access."""
+        return self._experimental_lazy.build()
+
+    def _on_experimental_accordion(self, change):
+        if change.get("new") == 0:
+            self._experimental_lazy.build()
 
     def _on_path_contributions_change(self, change):
         if change["new"] is not None:
@@ -1353,7 +1371,8 @@ class ResultsWidget(ipw.VBox):
         self.download_athena_chir.disabled = True
         self.save_scaled_spectrum.disabled = True
         self.conv_box.layout.display = "none"
-        self.experimental_widget.reset()
+        # Never builds the panel just to reset it.
+        self._experimental_lazy.reset()
         # Clear sub-sampling selectors.
         self.conv_sites.options = []
         self.conv_frames.options = []

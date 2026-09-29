@@ -11,27 +11,29 @@ from aiida_feff.calcfunctions.experimental import (
     list_experimental_groups,
 )
 from aiida_feff.data.xasdata import XasData
-from alc_aiidalab_widgets.widgets.database import AiiDADatabaseQueryWidget
 from alc_aiidalab_widgets.widgets.file_handling import FileUploadWidget
 from alc_aiidalab_widgets.widgets.file_viewer import SinglefileDataViewer
 from alc_aiidalab_widgets.widgets.status import Status
 
+from aiidalab_feff.common.database import ProjectedQueryWidget
 from aiidalab_feff.models import ResultsModel
 
 
-class ExperimentalXasDatabaseQueryWidget(AiiDADatabaseQueryWidget):
-    """Database selector that exposes only Larch-imported experimental XAS."""
+class ExperimentalXasDatabaseQueryWidget(ProjectedQueryWidget):
+    """Database selector that exposes only Larch-imported experimental XAS.
 
-    def search(self, change=None) -> None:
-        """Run the shared query, then retain nodes tagged by the import adapter."""
-        super().search(change)
-        self.results.options = [
-            (label, node)
-            for label, node in self.results.options
-            if node is False
-            or node.base.attributes.get("source_kind", None) == "experimental"
-            or node.base.extras.get("source_kind", None) == "experimental"
+    The import adapter tags nodes with ``source_kind``, on either the attributes
+    or the extras depending on when they were written. Selecting on that in SQL
+    keeps the scan proportional to the handful of experimental spectra rather
+    than to every XasData in the range.
+    """
+
+    extra_filters = {
+        "or": [
+            {"attributes.source_kind": "experimental"},
+            {"extras.source_kind": "experimental"},
         ]
+    }
 
 
 class ExperimentalSpectrumWidget(ipw.VBox):

@@ -170,3 +170,61 @@ def test_process_widget_defers_provenance_viewer_until_accordion_opens():
 
     widget.details_accordion.selected_index = 0
     assert rendered == [widget._pending_details_node]
+
+
+def test_lazy_widget_builds_once_on_demand():
+    """LazyWidget must not call its factory until something asks for the widget."""
+    from aiidalab_feff.common.lazy import LazyWidget
+
+    calls = []
+
+    def factory():
+        calls.append(1)
+        return ipw.HTML("real")
+
+    lazy = LazyWidget(factory, placeholder="<em>Loading…</em>")
+    assert calls == []
+    assert lazy.built is False
+    lazy.reset()  # resetting must not force a build
+    assert calls == []
+
+    built = lazy.build()
+    assert calls == [1]
+    assert lazy.built is True
+    assert lazy.children == (built,)
+    assert lazy.build() is built
+    assert calls == [1]
+
+
+def test_app_defers_database_backed_widgets_until_revealed():
+    """Startup must not construct the widgets that query the database.
+
+    Both selectors run a full AiiDA query from their constructor and sit behind
+    a collapsed accordion or an unselected tab, which is what made a page
+    refresh slow.
+    """
+    from aiidalab_feff.input import InputWidget
+    from aiidalab_feff.results import ResultsWidget
+
+    inputs = InputWidget(InputModel())
+    assert inputs._database_lazy.built is False
+    inputs.tabs.selected_index = 3
+    assert inputs._database_lazy.built is True
+
+    results = ResultsWidget(ResultsModel())
+    assert results._experimental_lazy.built is False
+    results.experimental_reference.selected_index = 0
+    assert results._experimental_lazy.built is True
+
+
+def test_experimental_selector_filters_in_sql_not_in_python():
+    """The experimental selector narrows the query instead of post-filtering."""
+    from aiidalab_feff.common.database import ProjectedQueryWidget
+    from aiidalab_feff.experimental import ExperimentalXasDatabaseQueryWidget
+
+    assert issubclass(ExperimentalXasDatabaseQueryWidget, ProjectedQueryWidget)
+    filters = ExperimentalXasDatabaseQueryWidget.extra_filters
+    assert filters["or"] == [
+        {"attributes.source_kind": "experimental"},
+        {"extras.source_kind": "experimental"},
+    ]

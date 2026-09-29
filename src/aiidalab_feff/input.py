@@ -6,17 +6,18 @@ from html import escape
 
 import ipywidgets as ipw
 from aiida.orm import StructureData, TrajectoryData
-from alc_aiidalab_widgets.widgets.database import AiiDADatabaseQueryWidget
 from alc_aiidalab_widgets.widgets.status import Status
 from alc_aiidalab_widgets.widgets.structure import StructureViewWidget
 
 from aiidalab_feff.absorber import AbsorberSelectorWidget
+from aiidalab_feff.common.database import ProjectedQueryWidget
 from aiidalab_feff.common.file_handling import (
     build_step_indices,
     read_cif_xyz_to_structure_data,
     read_file_list_to_structures,
     read_xyz_to_trajectory_data,
 )
+from aiidalab_feff.common.lazy import LazyWidget
 from aiidalab_feff.models import InputModel
 from aiidalab_feff.utils import validate_trajectory_size
 
@@ -339,7 +340,7 @@ class DatabaseInputWidget(ipw.VBox):
             style={"description_width": "initial"},
         )
         self.node_type_selector.observe(self._on_node_type_change, names="value")
-        self.database_query = AiiDADatabaseQueryWidget(
+        self.database_query = ProjectedQueryWidget(
             title="Select an AiiDA structure or trajectory",
             query=[StructureData, TrajectoryData],
         )
@@ -517,14 +518,19 @@ class InputWidget(ipw.VBox):
         self.structure_widget = StructureInputWidget(model)
         self.trajectory_widget = TrajectoryInputWidget(model)
         self.file_list_widget = FileListInputWidget(model)
-        self.database_widget = DatabaseInputWidget(model)
+        # Tab 3 is not the default tab, and DatabaseInputWidget queries the
+        # database from its constructor (9 s of app startup), so it is built
+        # the first time that tab is selected.
+        self._database_lazy = LazyWidget(
+            lambda: DatabaseInputWidget(model), placeholder="<em>Loading…</em>"
+        )
 
         self.tabs = ipw.Tab(
             children=[
                 self.structure_widget,
                 self.trajectory_widget,
                 self.file_list_widget,
-                self.database_widget,
+                self._database_lazy,
             ]
         )
         self.tabs.set_title(0, "Single structure")
@@ -591,6 +597,11 @@ class InputWidget(ipw.VBox):
             self.cost_preview.value = ""
             self.frame_count.value = ""
 
+    @property
+    def database_widget(self):
+        """The AiiDA-database input tab, constructed on first access."""
+        return self._database_lazy.build()
+
     def _on_tab_change(self, change):
         source_map = {
             0: "none",
@@ -598,6 +609,8 @@ class InputWidget(ipw.VBox):
             2: "file_list",
             3: "database",
         }
+        if change["new"] == 3:
+            self._database_lazy.build()
         self.model.ensemble_source = source_map.get(change["new"], "none")
         self._clear_non_active_source(change["new"])
         self._update_cost_preview()
@@ -608,7 +621,7 @@ class InputWidget(ipw.VBox):
             self.structure_widget,
             self.trajectory_widget,
             self.file_list_widget,
-            self.database_widget,
+            self._database_lazy,
         ]
         for i, widget in enumerate(widgets):
             if i != active_index:
@@ -618,7 +631,7 @@ class InputWidget(ipw.VBox):
         self.structure_widget.reset()
         self.trajectory_widget.reset()
         self.file_list_widget.reset()
-        self.database_widget.reset()
+        self._database_lazy.reset()
         self.absorber_selector.reset()
         self.model.reset()
         self.tabs.selected_index = 0
