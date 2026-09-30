@@ -288,6 +288,8 @@ class FeffApp(ipw.VBox):
         return []
 
     def _update_view(self):
+        if self._current_step == self.STEP_PROGRESS:
+            self.process_widget.ensure_rendered()
         self.content.children = [self.steps[self._current_step]]
         update_breadcrumbs(self._breadcrumb_buttons, self._current_step)
 

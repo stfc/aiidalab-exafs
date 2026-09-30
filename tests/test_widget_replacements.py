@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ipywidgets as ipw
 from alc_aiidalab_widgets.widgets.file_handling import FileUploadWidget
 from alc_aiidalab_widgets.widgets.mesages import MessageBox
@@ -208,7 +210,7 @@ def test_app_defers_database_backed_widgets_until_revealed():
 
     inputs = InputWidget(InputModel())
     assert inputs._database_lazy.built is False
-    inputs.tabs.selected_index = 3
+    inputs.tabs.selected_index = inputs.TAB_DATABASE
     assert inputs._database_lazy.built is True
 
     results = ResultsWidget(ResultsModel())
@@ -228,3 +230,81 @@ def test_experimental_selector_filters_in_sql_not_in_python():
         {"attributes.source_kind": "experimental"},
         {"extras.source_kind": "experimental"},
     ]
+
+
+def test_results_widget_reset_restores_spectrum_tab():
+    """Resetting ResultsWidget must restore the Spectrum tab so subsequent runs load fast."""
+    from aiidalab_feff.results import ResultsWidget
+
+    widget = ResultsWidget(ResultsModel())
+    paths_rendered = []
+    widget._render_paths = lambda: paths_rendered.append(1)
+
+    # User viewed the Path contributions tab on calculation A
+    widget.tabs.selected_index = widget.TAB_PATHS
+    assert widget.tabs.selected_index == widget.TAB_PATHS
+    assert paths_rendered == [1]
+
+    # Loading calculation B resets results
+    widget.reset()
+    assert widget.tabs.selected_index == widget.TAB_SPECTRUM
+
+    # Invalidating the deferred tabs must not trigger an additional render of Paths
+    widget._invalidate_tab(widget.TAB_PATHS)
+    assert paths_rendered == [1]
+
+
+def test_process_widget_defers_progress_view_when_on_results_loaded_wired():
+    """_on_finished must not do child-job progress aggregation when navigating to Results."""
+    from aiida.engine import ProcessState
+
+    rendered = []
+    widget = ProcessWidget(
+        InputModel(),
+        WorkflowModel(),
+        SubmissionModel(),
+        ResultsModel(),
+        on_results_loaded=lambda: None,
+    )
+    widget._render_process_view = rendered.append
+
+    proc = SimpleNamespace(
+        is_terminated=True,
+        pk=42,
+        process_state=ProcessState.FINISHED,
+        is_finished_ok=True,
+        outputs=SimpleNamespace(),
+    )
+    # Stub _populate_results to avoid database link lookups in this test
+    widget._populate_results = lambda _: None
+
+    widget._on_finished(proc)
+    assert rendered == []
+    assert widget._dirty_process_view is True
+
+    # Navigating to Progress triggers ensure_rendered
+    widget.ensure_rendered()
+    assert rendered == [proc]
+    assert widget._dirty_process_view is False
+
+
+def test_results_model_update_results():
+    """ResultsModel.update_results sets model fields inside hold_trait_notifications."""
+    model = ResultsModel()
+    notifications = []
+    model.observe(lambda change: notifications.append(change["name"]))
+
+    model.update_results(
+        process_node=None,
+        averaged_xas={"all": object()},
+        xas_grid={(0, 0): object()},
+        edge="K",
+        absorber_label="Fe",
+        is_ensemble=True,
+        n_failed=0,
+    )
+    assert model.edge == "K"
+    assert model.absorber_label == "Fe"
+    assert model.is_ensemble is True
+    # Notifications fired after the block exits
+    assert "averaged_xas" in notifications

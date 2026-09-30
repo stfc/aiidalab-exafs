@@ -211,6 +211,8 @@ class ProcessWidget(ipw.VBox):
         # the accordion instead of on every progress refresh.
         self._pending_details_node = None
         self._rendered_details_pk = None
+        self._pending_process_node = None
+        self._dirty_process_view = False
         self.details_accordion.observe(self._on_details_accordion, names="selected_index")
 
         action_row = ipw.HBox(
@@ -230,8 +232,16 @@ class ProcessWidget(ipw.VBox):
 
         self.submission_model.observe(self._on_process_node_change, names="process_node")
 
+    def ensure_rendered(self):
+        """Render the progress view if it was deferred and is still dirty."""
+        if getattr(self, "_dirty_process_view", False) and self._pending_process_node is not None:
+            self._dirty_process_view = False
+            self._render_process_view(self._pending_process_node)
+
     def _render_process_view(self, process_node):
         """Render human-readable progress panel and background details."""
+        self._dirty_process_view = False
+        self._pending_process_node = process_node
         if process_node is None:
             self.progress_panel.value = "<em>No calculation active.</em>"
             return
@@ -481,8 +491,6 @@ class ProcessWidget(ipw.VBox):
         if not process_node.is_terminated:
             return
 
-        self._render_process_view(process_node)
-
         state = process_node.process_state
         if state == ProcessState.FINISHED:
             if process_node.is_finished_ok:
@@ -496,12 +504,22 @@ class ProcessWidget(ipw.VBox):
                     f"Process {process_node.pk} finished with warnings: {exit_msg}."
                 )
             else:
+                self._render_process_view(process_node)
                 exit_msg = (
                     getattr(process_node, "exit_message", None)
                     or f"exit status {process_node.exit_status}"
                 )
                 self.status.failure(f"Process {process_node.pk} failed: {exit_msg}.")
                 return
+
+            # When embedded in FeffApp (on_results_loaded is wired), results are
+            # displayed immediately in ResultsWidget, so child-job aggregation
+            # for the hidden progress panel is deferred until the user visits Progress.
+            if self.on_results_loaded is not None:
+                self._pending_process_node = process_node
+                self._dirty_process_view = True
+            else:
+                self._render_process_view(process_node)
 
             try:
                 self._populate_results(process_node)
@@ -511,9 +529,11 @@ class ProcessWidget(ipw.VBox):
             if self.on_results_loaded is not None:
                 self.on_results_loaded()
         elif state == ProcessState.EXCEPTED:
+            self._render_process_view(process_node)
             exit_msg = getattr(process_node, "exit_message", None) or "Process excepted."
             self.status.failure(f"Process {process_node.pk} excepted: {exit_msg}")
         elif state == ProcessState.KILLED:
+            self._render_process_view(process_node)
             self.status.failure(f"Process {process_node.pk} killed.")
 
     def _populate_results(self, process_node):
@@ -533,32 +553,26 @@ class ProcessWidget(ipw.VBox):
             )
         )
 
-        # Assign every trait in one notification batch. Each bare assignment
-        # fires ResultsWidget._on_results_change, and both ``path_contributions``
-        # and ``averaged_xas`` trigger a full _render; holding the notifications
-        # collapses that into a single render once all the traits are consistent.
-        # (This also preserves the old ordering requirement: _render reads
-        # xas_grid / edge / absorber_label, which are now guaranteed to be set.)
-        with self.results_model.hold_trait_notifications():
-            self.results_model.xas_grid = xas_grid or None
-            self.results_model.edge = edge
-            self.results_model.absorber_label = absorber_label
-            self.results_model.is_ensemble = is_ensemble
-            self.results_model.process_node = process_node
-            self.results_model.n_failed = (
-                outputs.n_failed.value if hasattr(outputs, "n_failed") else 0
-            )
-            if hasattr(outputs, "path_contributions"):
-                self.results_model.path_contributions = outputs.path_contributions
-            if hasattr(outputs, "archive"):
-                self.results_model.archive = outputs.archive
-            self.results_model.averaged_xas = averaged_xas
+        self.results_model.update_results(
+            process_node=process_node,
+            averaged_xas=averaged_xas,
+            xas_grid=xas_grid,
+            edge=edge,
+            absorber_label=absorber_label,
+            is_ensemble=is_ensemble,
+            n_failed=outputs.n_failed.value if hasattr(outputs, "n_failed") else 0,
+            path_contributions=getattr(outputs, "path_contributions", None),
+            archive=getattr(outputs, "archive", None),
+        )
 
     def reset(self):
         self.status.clear()
         self.monitor_output.clear_output()
+        self.progress_panel.value = ""
         self._pending_details_node = None
         self._rendered_details_pk = None
+        self._pending_process_node = None
+        self._dirty_process_view = False
         self.submission_model.reset()
 
 

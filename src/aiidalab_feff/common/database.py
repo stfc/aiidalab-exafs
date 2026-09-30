@@ -50,6 +50,7 @@ class ProjectedQueryWidget(AiiDADatabaseQueryWidget):
             filters.update(self.extra_filters)
 
         query = QueryBuilder()
+        target_kwargs = {"filters": filters, "project": list(self._PROJECTIONS)}
         if self.mode.value == "uploaded":
             processed = QueryBuilder()
             processed.append(self.query_type, project=["id"], tag="structures")
@@ -57,7 +58,7 @@ class ProjectedQueryWidget(AiiDADatabaseQueryWidget):
             processed_ids = [row[0] for row in processed.all()]
             if processed_ids:
                 filters["id"] = {"!in": processed_ids}
-            query.append(self.query_type, filters=filters, project=list(self._PROJECTIONS))
+            query.append(self.query_type, **target_kwargs)
         elif self.mode.value == "calculated":
             if self.drop_down.value == "All":
                 query.append((CalcJobNode, WorkChainNode), tag="parent")
@@ -67,14 +68,9 @@ class ProjectedQueryWidget(AiiDADatabaseQueryWidget):
                     filters={"label": self.drop_down.value},
                     tag="parent",
                 )
-            query.append(
-                self.query_type,
-                with_incoming="parent",
-                filters=filters,
-                project=list(self._PROJECTIONS),
-            )
+            query.append(self.query_type, with_incoming="parent", **target_kwargs)
         else:
-            query.append(self.query_type, filters=filters, project=list(self._PROJECTIONS))
+            query.append(self.query_type, **target_kwargs)
 
         query.order_by({self.query_type: {"ctime": "desc"}})
         return query

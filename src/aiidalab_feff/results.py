@@ -1362,6 +1362,7 @@ class ResultsWidget(ipw.VBox):
         self._current_paths_source = None
         self.paths_tab.children = []
         self._dirty_tabs.clear()
+        self.tabs.selected_index = self.TAB_SPECTRUM
         self.export_spectrum.options = []
         self.chi_k_preview.value = "<em>No spectrum data available.</em>"
         self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"

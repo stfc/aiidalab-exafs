@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import NamedTuple
 
 import ipywidgets as ipw
 from aiida import orm
@@ -65,20 +66,27 @@ def _count_batch_snaps(node) -> int | None:
     return sum(1 for key in dir(xas) if key.startswith("snap_"))
 
 
-def _batch_link_maps(child_pks: list[int]) -> tuple[set[int], dict[int, int], dict[int, int]]:
+class BatchLinkMaps(NamedTuple):
+    """Batched link lookup caches used by _job_record to prevent N+1 queries."""
+
+    has_frame_idx: set[int]
+    frame_counts: dict[int, int]
+    snap_counts: dict[int, int]
+
+
+def _batch_link_maps(child_pks: list[int]) -> BatchLinkMaps:
     """Resolve, in three queries, the per-child link facts ``_job_record`` needs.
 
     Doing this per child is an N+1: ``"frame_idx" in child.inputs``,
     ``child.inputs.frame_indices`` and ``dir(child.outputs.xas_data)`` each issue
     their own link query, which measured 1.9 s for a 68-child run. Returns
-    ``(pks that have a frame_idx input, pk -> len(frame_indices), pk -> #snap
-    outputs)``.
+    ``BatchLinkMaps(has_frame_idx, frame_counts, snap_counts)``.
     """
     has_frame_idx: set[int] = set()
     frame_counts: dict[int, int] = {}
     snap_counts: dict[int, int] = {}
     if not child_pks:
-        return has_frame_idx, frame_counts, snap_counts
+        return BatchLinkMaps(has_frame_idx, frame_counts, snap_counts)
 
     # Inputs labelled ``frame_idx`` (marks a real per-snapshot FeffCalculation).
     qb = QueryBuilder()
@@ -111,16 +119,16 @@ def _batch_link_maps(child_pks: list[int]) -> tuple[set[int], dict[int, int], di
     for pk, _ in qb.all():
         snap_counts[int(pk)] = snap_counts.get(int(pk), 0) + 1
 
-    return has_frame_idx, frame_counts, snap_counts
+    return BatchLinkMaps(has_frame_idx, frame_counts, snap_counts)
 
 
-def _job_record(child, link_maps=None) -> dict | None:
+def _job_record(child, link_maps: BatchLinkMaps | tuple | None = None) -> dict | None:
     """Summarize one child FEFF job for progress accounting.
 
     Returns None for jobs that do not represent a (frame, site) calculation,
     such as potentials-only precompute runs.
 
-    ``link_maps`` is the batched ``_batch_link_maps`` result. When omitted the
+    ``link_maps`` is the batched ``BatchLinkMaps`` result. When omitted the
     per-child link lookups are done directly (slower, but keeps this function
     usable on its own).
     """
@@ -130,7 +138,21 @@ def _job_record(child, link_maps=None) -> dict | None:
     process_label = getattr(child, "process_label", None)
     is_batch = process_label == "FeffBatchCalculation"
     pk = getattr(child, "pk", None)
-    has_frame_idx, frame_counts, snap_counts = link_maps or (None, None, None)
+    has_frame_idx = (
+        link_maps.has_frame_idx
+        if hasattr(link_maps, "has_frame_idx")
+        else (link_maps[0] if link_maps else None)
+    )
+    frame_counts = (
+        link_maps.frame_counts
+        if hasattr(link_maps, "frame_counts")
+        else (link_maps[1] if link_maps else None)
+    )
+    snap_counts = (
+        link_maps.snap_counts
+        if hasattr(link_maps, "snap_counts")
+        else (link_maps[2] if link_maps else None)
+    )
     if process_label == "FeffCalculation":
         # Potentials-only jobs carry no frame index; skip if we can tell.
         try:

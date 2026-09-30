@@ -512,6 +512,11 @@ class DatabaseInputWidget(ipw.VBox):
 class InputWidget(ipw.VBox):
     """Main input step widget combining single and ensemble sources."""
 
+    TAB_STRUCTURE = 0
+    TAB_TRAJECTORY = 1
+    TAB_FILE_LIST = 2
+    TAB_DATABASE = 3
+
     def __init__(self, model: InputModel):
         self.model = model
 
@@ -533,10 +538,10 @@ class InputWidget(ipw.VBox):
                 self._database_lazy,
             ]
         )
-        self.tabs.set_title(0, "Single structure")
-        self.tabs.set_title(1, "MD trajectory")
-        self.tabs.set_title(2, "File list")
-        self.tabs.set_title(3, "AiiDA database")
+        self.tabs.set_title(self.TAB_STRUCTURE, "Single structure")
+        self.tabs.set_title(self.TAB_TRAJECTORY, "MD trajectory")
+        self.tabs.set_title(self.TAB_FILE_LIST, "File list")
+        self.tabs.set_title(self.TAB_DATABASE, "AiiDA database")
         self.tabs.observe(self._on_tab_change, names="selected_index")
 
         self.absorber_selector = AbsorberSelectorWidget(model)
@@ -604,12 +609,12 @@ class InputWidget(ipw.VBox):
 
     def _on_tab_change(self, change):
         source_map = {
-            0: "none",
-            1: "trajectory",
-            2: "file_list",
-            3: "database",
+            self.TAB_STRUCTURE: "none",
+            self.TAB_TRAJECTORY: "trajectory",
+            self.TAB_FILE_LIST: "file_list",
+            self.TAB_DATABASE: "database",
         }
-        if change["new"] == 3:
+        if change["new"] == self.TAB_DATABASE:
             self._database_lazy.build()
         self.model.ensemble_source = source_map.get(change["new"], "none")
         self._clear_non_active_source(change["new"])
@@ -634,7 +639,7 @@ class InputWidget(ipw.VBox):
         self._database_lazy.reset()
         self.absorber_selector.reset()
         self.model.reset()
-        self.tabs.selected_index = 0
+        self.tabs.selected_index = self.TAB_STRUCTURE
         self.cost_preview.value = ""
         self.frame_count.value = ""
 

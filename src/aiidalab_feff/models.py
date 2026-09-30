@@ -160,6 +160,33 @@ class ResultsModel(HasTraits):
         self.comparison_s02 = 1.0
         self.comparison_e0 = 0.0
 
+    def update_results(
+        self,
+        *,
+        process_node: ProcessNode | None = None,
+        averaged_xas: dict | None = None,
+        xas_grid: dict | None = None,
+        edge: str = "",
+        absorber_label: str = "",
+        is_ensemble: bool = False,
+        n_failed: int = 0,
+        path_contributions: PathContributionsData | None = None,
+        archive: ExafsArchiveData | None = None,
+    ) -> None:
+        """Atomically update results attributes within a single notification hold."""
+        with self.hold_trait_notifications():
+            self.xas_grid = xas_grid or None
+            self.edge = edge
+            self.absorber_label = absorber_label
+            self.is_ensemble = is_ensemble
+            self.process_node = process_node
+            self.n_failed = n_failed
+            if path_contributions is not None:
+                self.path_contributions = path_contributions
+            if archive is not None:
+                self.archive = archive
+            self.averaged_xas = averaged_xas
+
     @property
     def spectrum_title(self) -> str:
         """A short title like 'Mn K-edge' (empty if metadata not populated)."""
