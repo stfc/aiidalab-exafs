@@ -142,23 +142,24 @@ class ResultsModel(HasTraits):
 
     def reset(self):
         """Reset results state."""
-        self.averaged_xas = None
-        self.n_failed = None
-        self.path_contributions = None
-        self.archive = None
-        self.is_ensemble = False
-        self.process_node = None
-        self.edge = ""
-        self.absorber_label = ""
-        self.experimental_xas = None
-        self.xas_grid = None
-        self.ft_kmin = 2.0
-        self.ft_kmax = 14.0
-        self.ft_dk = 1.0
-        self.ft_rmax = 8.0
-        self.kweight = 2
-        self.comparison_s02 = 1.0
-        self.comparison_e0 = 0.0
+        with self.hold_trait_notifications():
+            self.averaged_xas = None
+            self.n_failed = None
+            self.path_contributions = None
+            self.archive = None
+            self.is_ensemble = False
+            self.process_node = None
+            self.edge = ""
+            self.absorber_label = ""
+            self.experimental_xas = None
+            self.xas_grid = None
+            self.ft_kmin = 2.0
+            self.ft_kmax = 14.0
+            self.ft_dk = 1.0
+            self.ft_rmax = 8.0
+            self.kweight = 2
+            self.comparison_s02 = 1.0
+            self.comparison_e0 = 0.0
 
     def update_results(
         self,

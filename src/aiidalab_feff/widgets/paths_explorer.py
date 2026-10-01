@@ -7,10 +7,13 @@ import numpy as np
 import pandas as pd
 from aiida_feff.data.archive import ExafsArchiveData
 from aiida_feff.data.pathcontributions import PathContributionsData
+from aiidalab_feff.common.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 from ipydatagrid import DataGrid, TextRenderer
 from IPython.display import display
 from md_exafs.viz import group_path_results
+
+from aiidalab_feff.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
 
 
 class PathContributionsExplorer(ipw.VBox):
@@ -201,11 +204,47 @@ class PathContributionsExplorer(ipw.VBox):
             f"Loaded {len(self.path_groups)} path groups (sorted by amplitude ratio)."
         )
 
+        self.download_output = ipw.Output(layout=ipw.Layout(display="none"))
+        proc_node = getattr(self.results_model, "process_node", None)
+        run_pk = getattr(proc_node, "pk", None) or getattr(self.path_contributions, "pk", None)
+        pk_suffix = f"-run-{run_pk}" if run_pk else ""
+        self.download_h5 = Download(
+            f"feff{pk_suffix}-combined.h5",
+            cb=self._get_h5_bytes,
+            output=self.download_output,
+            mimetype="application/x-hdf5",
+            description="Download combined .h5",
+            icon="download",
+            layout=ipw.Layout(width="auto"),
+        )
+        self.download_h5.add_class("feff-btn-secondary")
+        can_download = False
+        try:
+            can_download = (
+                find_combined_h5_node(self.path_contributions) is not None
+                or hasattr(self.path_contributions, "_raw")
+                or hasattr(self.path_contributions, "open")
+            )
+        except Exception:
+            can_download = False
+        self.download_h5.disabled = not can_download
+
         overview_html = ipw.HTML(
-            f"<div style='font-size: 13px; color: var(--feff-ink, #1F2933); margin-bottom: 8px;'>"
+            f"<div style='font-size: 13px; color: var(--feff-ink, #1F2933);'>"
             f"<strong>Scattering paths:</strong> Loaded <strong>{len(self.path_groups)}</strong> path groups "
             f"(sorted by amplitude ratio). Click rows to toggle selection (plots update live)."
-            f"</div>"
+            f"</div>",
+            layout=ipw.Layout(flex="1 1 auto"),
+        )
+        top_bar = ipw.HBox(
+            [overview_html, self.download_h5, self.download_output],
+            layout=ipw.Layout(
+                justify_content="space-between",
+                align_items="center",
+                flex_flow="row wrap",
+                grid_gap="8px",
+                margin="0 0 8px 0",
+            ),
         )
 
         # 1. Build DataFrame for ipydatagrid DataGrid
@@ -319,7 +358,7 @@ class PathContributionsExplorer(ipw.VBox):
 
         super().__init__(
             [
-                overview_html,
+                top_bar,
                 ft_controls,
                 table_and_charts,
                 self.structure_accordion,
@@ -332,6 +371,11 @@ class PathContributionsExplorer(ipw.VBox):
 
         # Initial plot of top paths so user immediately sees results!
         self._on_plot(None)
+
+    def _get_h5_bytes(self) -> bytes:
+        """Return raw bytes of the combined .h5 archive for this path explorer."""
+        data = get_combined_h5_bytes(self.path_contributions)
+        return data or b""
 
     def _load_path_groups(self) -> list[dict]:
         """Load and group paths using canonical md_exafs.viz grouping."""

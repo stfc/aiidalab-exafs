@@ -13,10 +13,11 @@ import numpy as np
 from aiida import orm
 from aiida_feff.calcfunctions.experimental import scale_simulated_spectrum, scaled_chi_arrays
 from aiida_feff.data.xasdata import XasData
-from alc_aiidalab_widgets.widgets.download import Download
+from aiidalab_feff.common.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 from md_exafs.spectra import average_chi_arrays
 
+from aiidalab_feff.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
 from aiidalab_feff.common.lazy import LazyWidget
 from aiidalab_feff.experimental import ExperimentalSpectrumWidget
 from aiidalab_feff.models import ResultsModel
@@ -362,6 +363,7 @@ class ResultsWidget(ipw.VBox):
         self.chi_r_download_output = ipw.Output()
         self.athena_chi_output = ipw.Output()
         self.athena_chir_output = ipw.Output()
+        self.combined_h5_download_output = ipw.Output()
 
         self.download_chi_k = Download(
             "feff-exafs-chi-k.csv",
@@ -399,6 +401,26 @@ class ResultsWidget(ipw.VBox):
             icon="download",
             disabled=True,
         )
+        self.download_combined_h5 = Download(
+            "feff-exafs-combined.h5",
+            cb=self._combined_h5_bytes,
+            output=self.combined_h5_download_output,
+            mimetype="application/x-hdf5",
+            description="Download combined .h5",
+            icon="download",
+            disabled=True,
+        )
+
+        self.download_outputs = ipw.HBox(
+            [
+                self.chi_k_download_output,
+                self.chi_r_download_output,
+                self.athena_chi_output,
+                self.athena_chir_output,
+                self.combined_h5_download_output,
+            ],
+            layout=ipw.Layout(display="none"),
+        )
 
         self.export_card = ipw.VBox(
             [
@@ -411,9 +433,11 @@ class ResultsWidget(ipw.VBox):
                         self.download_athena_chi,
                         self.download_chi_r,
                         self.download_athena_chir,
+                        self.download_combined_h5,
                     ],
                     layout=ipw.Layout(grid_gap="8px", flex_flow="row wrap"),
                 ),
+                self.download_outputs,
             ],
             layout=ipw.Layout(padding="10px 14px", border="1px solid #D5DBE1", margin="12px 0"),
         )
@@ -573,6 +597,7 @@ class ResultsWidget(ipw.VBox):
         # the render count, because _populate_results sets it alongside
         # ``averaged_xas`` and both notifications fire.
         self.results_model.observe(self._on_path_contributions_change, names="path_contributions")
+        self.results_model.observe(self._on_archive_change, names="archive")
 
         self._render()
 
@@ -610,7 +635,13 @@ class ResultsWidget(ipw.VBox):
             self._experimental_lazy.build()
 
     def _on_path_contributions_change(self, change):
-        if change["new"] is not None:
+        self._render_combined_h5_export()
+        if change.get("new") is not None:
+            self._invalidate_tab(self.TAB_PATHS)
+
+    def _on_archive_change(self, change):
+        self._render_combined_h5_export()
+        if change.get("new") is not None:
             self._invalidate_tab(self.TAB_PATHS)
 
     def _on_refresh(self, _):
@@ -725,6 +756,7 @@ class ResultsWidget(ipw.VBox):
             self.chi_r_preview.value = "<em>No Fourier-transform data available.</em>"
             self.download_chi_k.disabled = True
             self.download_chi_r.disabled = True
+            self.download_combined_h5.disabled = True
             self.save_scaled_spectrum.disabled = True
             return
 
@@ -1147,6 +1179,36 @@ class ResultsWidget(ipw.VBox):
         self._render_chi_k_export()
         self._render_chi_r_export()
         self._render_athena_exports()
+        self._render_combined_h5_export()
+
+    def _render_combined_h5_export(self):
+        """Update combined .h5 download filename and enabled state."""
+        h5_node = self._combined_h5_node()
+        can_export = h5_node is not None
+        self.download_combined_h5.disabled = not can_export
+        if can_export:
+            pk = getattr(self.results_model.process_node, "pk", None) or getattr(
+                h5_node, "pk", None
+            )
+            pk_suffix = f"-run-{pk}" if pk else ""
+            self.download_combined_h5.filename = f"feff{pk_suffix}-combined.h5"
+            self.download_combined_h5.tooltip = (
+                f"Download combined HDF5 archive ({self.download_combined_h5.filename})"
+            )
+        else:
+            self.download_combined_h5.tooltip = "No combined .h5 archive found for this run"
+
+    def _combined_h5_node(self):
+        """Resolve the archive or path contributions node for the active run."""
+        return find_combined_h5_node(self.results_model)
+
+    def _combined_h5_bytes(self) -> bytes:
+        """Return raw bytes of the combined .h5 file."""
+        h5_node = self._combined_h5_node()
+        if h5_node is None:
+            return b""
+        data = get_combined_h5_bytes(h5_node)
+        return data or b""
 
     def _render_athena_exports(self):
         """Update Athena download filenames and enabled state."""
@@ -1370,6 +1432,7 @@ class ResultsWidget(ipw.VBox):
         self.download_chi_r.disabled = True
         self.download_athena_chi.disabled = True
         self.download_athena_chir.disabled = True
+        self.download_combined_h5.disabled = True
         self.save_scaled_spectrum.disabled = True
         self.conv_box.layout.display = "none"
         # Never builds the panel just to reset it.

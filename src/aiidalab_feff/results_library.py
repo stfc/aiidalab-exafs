@@ -10,9 +10,11 @@ import ipywidgets as ipw
 import numpy as np
 from aiida import orm
 from aiida.orm import QueryBuilder, StructureData, WorkChainNode, load_node
+from aiidalab_feff.common.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 from alc_aiidalab_widgets.widgets.structure import StructureViewWidget
 
+from aiidalab_feff.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
 from aiidalab_feff.running_tasks import (
     _TERMINAL_STATES,
     WORKCHAIN_LABEL,
@@ -161,10 +163,23 @@ class ResultsLibraryWidget(ipw.VBox):
             button_style="primary",
             icon="bar-chart",
             disabled=True,
-            layout=ipw.Layout(width="100%", margin="8px 0"),
+            layout=ipw.Layout(width="100%", margin="8px 0 4px 0"),
         )
         self.open_button.add_class("feff-btn-primary")
         self.open_button.on_click(self._open_selected)
+
+        self.download_h5_output = ipw.Output(layout=ipw.Layout(display="none"))
+        self.download_h5_button = Download(
+            "feff-run-combined.h5",
+            cb=self._download_selected_h5,
+            output=self.download_h5_output,
+            mimetype="application/x-hdf5",
+            description="Download combined .h5",
+            icon="download",
+            disabled=True,
+            layout=ipw.Layout(width="100%", margin="0 0 8px 0"),
+        )
+        self.download_h5_button.add_class("feff-btn-secondary")
 
         # Open by run ID (PK)
         self.pk_input = ipw.Text(
@@ -214,8 +229,10 @@ class ResultsLibraryWidget(ipw.VBox):
             [
                 self.preview,
                 self.open_button,
+                self.download_h5_button,
                 self.preview_thumbnail,
                 self.structure_viewer,
+                self.download_h5_output,
             ],
             layout=ipw.Layout(
                 width="340px",
@@ -317,6 +334,9 @@ class ResultsLibraryWidget(ipw.VBox):
         self.preview.value = "<em>Select a calculation run to inspect details.</em>"
         self.preview_thumbnail.value = ""
         self.open_button.disabled = True
+        self.download_h5_button.disabled = True
+        self.download_h5_button.description = "Download combined .h5"
+        self.download_h5_button.tooltip = "Download combined .h5 file for the selected run"
         self.last_count = running_count
 
         total_runs = len(records)
@@ -336,6 +356,9 @@ class ResultsLibraryWidget(ipw.VBox):
             self.preview.value = "<em>Select a calculation run to inspect details.</em>"
             self.preview_thumbnail.value = ""
             self.structure_viewer.children = [self.structure_viewer.message]
+            self.download_h5_button.disabled = True
+            self.download_h5_button.description = "Download combined .h5"
+            self.download_h5_button.tooltip = "Download combined .h5 file for the selected run"
             return
 
         status_badge = (
@@ -380,6 +403,32 @@ class ResultsLibraryWidget(ipw.VBox):
                 self.structure_viewer.assign_structure_from_structuredata(st)
         except Exception:
             self.preview_thumbnail.value = ""
+
+        # Update download button state
+        try:
+            node = record.get("node")
+            h5_node = find_combined_h5_node(node)
+            if h5_node is not None:
+                self.download_h5_button.disabled = False
+                self.download_h5_button.filename = f"feff-run-{pk}-combined.h5"
+                self.download_h5_button.tooltip = f"Download combined .h5 file for Run #{pk}"
+                self.download_h5_button.description = "Download combined .h5"
+            else:
+                self.download_h5_button.disabled = True
+                self.download_h5_button.tooltip = f"No combined .h5 file available for Run #{pk}"
+                self.download_h5_button.description = "Download combined .h5"
+        except Exception:
+            self.download_h5_button.disabled = True
+            self.download_h5_button.description = "Download combined .h5"
+
+    def _download_selected_h5(self) -> bytes:
+        """Download callback for the selected run in ResultsLibraryWidget."""
+        pk = self._selected_pk
+        if pk is None:
+            return b""
+        record = self._records.get(pk)
+        node = record.get("node") if record else pk
+        return get_combined_h5_bytes(node) or b""
 
     def _open_selected(self, _):
         """Open the active selected calculation in the main app."""
