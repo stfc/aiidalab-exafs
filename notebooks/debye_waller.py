@@ -11,7 +11,7 @@ supporting both AiiDA database TrajectoryData nodes and direct file uploads.
 #     "altair>=5.0",
 #     "ase>=3.22",
 #     "marimo>=0.16.4",
-#     "md-exafs>=0.2.0",
+#     "md-exafs>=0.3.0,<0.4",
 #     "numpy>=1.21",
 #     "pandas>=2.0",
 #     "weas-widget>=0.1.26",

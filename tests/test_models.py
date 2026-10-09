@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from aiidalab_feff.common.file_handling import _guess_ase_format
-from aiidalab_feff.input import _parse_indices, _upload_error_message
-from aiidalab_feff.models import InputModel, WorkflowModel
+from aiidalab_exafs.common.file_handling import _guess_ase_format
+from aiidalab_exafs.input import _parse_indices, _upload_error_message
+from aiidalab_exafs.models import InputModel, WorkflowModel
 
 
 def test_input_model_single_structure():
@@ -66,7 +66,7 @@ def test_read_cif_xyz_extxyz_with_xyz_extension():
 
     import numpy as np
 
-    from aiidalab_feff.common.file_handling import read_cif_xyz_to_structure_data
+    from aiidalab_exafs.common.file_handling import read_cif_xyz_to_structure_data
 
     content = (
         b"2\n"
@@ -75,7 +75,7 @@ def test_read_cif_xyz_extxyz_with_xyz_extension():
         b"C 1.0 1.0 1.0\n"
     )
 
-    with patch("aiidalab_feff.common.file_handling.StructureData") as mock_sd_cls:
+    with patch("aiidalab_exafs.common.file_handling.StructureData") as mock_sd_cls:
         mock_sd = MagicMock()
         mock_sd_cls.return_value = mock_sd
         read_cif_xyz_to_structure_data(content, "structure.xyz")
@@ -92,11 +92,11 @@ def test_read_cif_xyz_fallback_to_plain_xyz():
 
     import numpy as np
 
-    from aiidalab_feff.common.file_handling import read_cif_xyz_to_structure_data
+    from aiidalab_exafs.common.file_handling import read_cif_xyz_to_structure_data
 
     content = b"2\nProperties=species:S:1:pos:R:bad_number\nC 0.0 0.0 0.0\nC 1.0 1.0 1.0\n"
 
-    with patch("aiidalab_feff.common.file_handling.StructureData") as mock_sd_cls:
+    with patch("aiidalab_exafs.common.file_handling.StructureData") as mock_sd_cls:
         mock_sd = MagicMock()
         mock_sd_cls.return_value = mock_sd
         read_cif_xyz_to_structure_data(content, "plain.xyz")
@@ -113,7 +113,7 @@ def test_read_xyz_to_trajectory_extxyz_with_xyz_extension():
 
     import numpy as np
 
-    from aiidalab_feff.common.file_handling import read_xyz_to_trajectory_data
+    from aiidalab_exafs.common.file_handling import read_xyz_to_trajectory_data
 
     frame = (
         b"2\n"
@@ -123,7 +123,7 @@ def test_read_xyz_to_trajectory_extxyz_with_xyz_extension():
     )
     content = frame + frame
 
-    with patch("aiidalab_feff.common.file_handling.TrajectoryData") as mock_td_cls:
+    with patch("aiidalab_exafs.common.file_handling.TrajectoryData") as mock_td_cls:
         mock_td = MagicMock()
         mock_td_cls.return_value = mock_td
         read_xyz_to_trajectory_data(content, "traj.xyz")
@@ -136,7 +136,7 @@ def test_read_xyz_to_trajectory_extxyz_with_xyz_extension():
 
 def test_workflow_parameter_validation():
     """FeffParametersWidget validates required parameters and rejects invalid ones."""
-    from aiidalab_feff.workflow import FeffParametersWidget
+    from aiidalab_exafs.workflow import FeffParametersWidget
 
     model = WorkflowModel()
     widget = FeffParametersWidget(model)
@@ -148,7 +148,7 @@ def test_workflow_parameter_validation():
 
 def test_workflow_advanced_defaults_and_reset():
     """FeffParametersWidget exposes advanced cards with defaults and supports resetting."""
-    from aiidalab_feff.workflow import FeffParametersWidget
+    from aiidalab_exafs.workflow import FeffParametersWidget
 
     model = WorkflowModel()
     widget = FeffParametersWidget(model)
@@ -195,7 +195,7 @@ def test_average_xas_on_common_k_nan_aware():
     """_average_xas_on_common_k uses NaN-aware statistics."""
     import numpy as np
 
-    from aiidalab_feff.results import _average_xas_on_common_k
+    from aiidalab_exafs.results import _average_xas_on_common_k
 
     x1 = DummyXas(np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3]))
     x2 = DummyXas(np.array([1.0, 2.0]), np.array([0.15, 0.25]))
@@ -225,17 +225,18 @@ def test_is_usable_workflow():
     from unittest.mock import MagicMock
 
     from aiida.orm import WorkChainNode
+    from conftest import mock_of
 
-    from aiidalab_feff.results_library import _is_usable_workflow
+    from aiidalab_exafs.results_library import _is_usable_workflow
 
     # Successful workflow
-    m_ok = MagicMock(spec=WorkChainNode)
+    m_ok = mock_of(WorkChainNode)
     m_ok.process_label = "EnsembleExafsWorkChain"
     m_ok.is_finished_ok = True
     assert _is_usable_workflow(m_ok)
 
     # Partially-failed workflow with averaged_xas (exit code 301)
-    m_part = MagicMock(spec=WorkChainNode)
+    m_part = mock_of(WorkChainNode)
     m_part.process_label = "EnsembleExafsWorkChain"
     m_part.is_finished_ok = False
     m_part.is_finished = True
@@ -244,7 +245,7 @@ def test_is_usable_workflow():
     assert _is_usable_workflow(m_part)
 
     # Truly failed workflow with no averaged_xas
-    m_fail = MagicMock(spec=WorkChainNode)
+    m_fail = mock_of(WorkChainNode)
     m_fail.process_label = "EnsembleExafsWorkChain"
     m_fail.is_finished_ok = False
     m_fail.is_finished = True
@@ -252,7 +253,7 @@ def test_is_usable_workflow():
     assert not _is_usable_workflow(m_fail)
 
     # Wrong process label
-    m_wrong = MagicMock(spec=WorkChainNode)
+    m_wrong = mock_of(WorkChainNode)
     m_wrong.process_label = "OtherWorkChain"
     m_wrong.is_finished_ok = True
     assert not _is_usable_workflow(m_wrong)
@@ -262,7 +263,7 @@ def test_get_workchain_status_surfaces_exit_message():
     """get_workchain_status includes exit status and exit message for terminated processes."""
     from unittest.mock import MagicMock
 
-    from aiidalab_feff.process import get_workchain_status
+    from aiidalab_exafs.process import get_workchain_status
 
     node = MagicMock()
     node.pk = 100

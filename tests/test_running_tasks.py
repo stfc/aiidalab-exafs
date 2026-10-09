@@ -7,23 +7,23 @@ from types import SimpleNamespace
 
 def test_is_running_workflow():
     """_is_running_workflow accepts only unfinished EnsembleExafsWorkChains."""
-    from unittest.mock import MagicMock
 
     from aiida.orm import WorkChainNode
+    from conftest import mock_of
 
-    from aiidalab_feff.running_tasks import _is_running_workflow
+    from aiidalab_exafs.running_tasks import _is_running_workflow
 
-    running = MagicMock(spec=WorkChainNode)
+    running = mock_of(WorkChainNode)
     running.process_label = "EnsembleExafsWorkChain"
     running.is_terminated = False
     assert _is_running_workflow(running)
 
-    terminated = MagicMock(spec=WorkChainNode)
+    terminated = mock_of(WorkChainNode)
     terminated.process_label = "EnsembleExafsWorkChain"
     terminated.is_terminated = True
     assert not _is_running_workflow(terminated)
 
-    wrong_label = MagicMock(spec=WorkChainNode)
+    wrong_label = mock_of(WorkChainNode)
     wrong_label.process_label = "OtherWorkChain"
     wrong_label.is_terminated = False
     assert not _is_running_workflow(wrong_label)
@@ -33,7 +33,7 @@ def test_is_running_workflow():
 
 def test_aggregate_jobs_counts_snaps_and_skips_potentials():
     """Aggregation rolls job records into done/failed/pending snap counts."""
-    from aiidalab_feff.running_tasks import _aggregate_jobs
+    from aiidalab_exafs.running_tasks import _aggregate_jobs
 
     jobs = [
         # Serial (frame, site) jobs: one snap each.
@@ -77,7 +77,7 @@ def test_aggregate_jobs_counts_snaps_and_skips_potentials():
 
 def test_estimate_expected_calculations_structures_namespace():
     """Expected total = number of structures × absorber sites."""
-    from aiidalab_feff.running_tasks import _estimate_expected_calculations
+    from aiidalab_exafs.running_tasks import _estimate_expected_calculations
 
     params = SimpleNamespace(get_dict=lambda: {"edge": "K", "absorbing_atoms": [0, 5]})
     structures = {"frame_0000": object(), "frame_0001": object(), "frame_0002": object()}
@@ -88,7 +88,7 @@ def test_estimate_expected_calculations_structures_namespace():
 
 def test_estimate_expected_calculations_trajectory_with_step_ids():
     """Trajectory input honours explicit step_ids for the frame count."""
-    from aiidalab_feff.running_tasks import _estimate_expected_calculations
+    from aiidalab_exafs.running_tasks import _estimate_expected_calculations
 
     class FakeTrajectory:
         def get_stepids(self):
@@ -118,7 +118,7 @@ def test_estimate_expected_calculations_trajectory_with_step_ids():
 
 def test_estimate_expected_calculations_trajectory_with_sample_interval():
     """Trajectory input honours sample_interval when no step_ids are given."""
-    from aiidalab_feff.running_tasks import _estimate_expected_calculations
+    from aiidalab_exafs.running_tasks import _estimate_expected_calculations
 
     class FakeTrajectory:
         def get_array(self, name):
@@ -147,7 +147,7 @@ def test_estimate_expected_calculations_trajectory_with_sample_interval():
 
 def test_estimate_expected_calculations_returns_none_when_unresolvable():
     """Missing parameters or unresolvable absorber specs fall back to None."""
-    from aiidalab_feff.running_tasks import _estimate_expected_calculations
+    from aiidalab_exafs.running_tasks import _estimate_expected_calculations
 
     # No absorbing atom spec at all.
     params = SimpleNamespace(get_dict=lambda: {"edge": "K"})
@@ -169,7 +169,7 @@ def test_estimate_expected_calculations_returns_none_when_unresolvable():
 
 def test_counts_text_and_progress_bar():
     """Summary text and bar reflect done/failed/left counts."""
-    from aiidalab_feff.running_tasks import _counts_text, _progress_bar_html
+    from aiidalab_exafs.running_tasks import _counts_text, _progress_bar_html
 
     text = _counts_text(done=5, failed=1, pending=2, expected=10)
     assert "5/10 done" in text
@@ -187,7 +187,7 @@ def test_counts_text_and_progress_bar():
 
 def test_job_record_skips_potentials_and_requires_frame_idx():
     """Potentials-only jobs are excluded from progress accounting."""
-    from aiidalab_feff.running_tasks import _job_record
+    from aiidalab_exafs.running_tasks import _job_record
 
     pot = SimpleNamespace(
         label="pot_site_0000",
@@ -221,9 +221,55 @@ def test_job_record_skips_potentials_and_requires_frame_idx():
     assert record["ok"] is True
 
 
+def test_job_record_uses_batched_link_maps_instead_of_per_child_queries():
+    """With link maps supplied, _job_record must not touch child.inputs/outputs.
+
+    The batched maps exist to kill an N+1 query; if _job_record silently fell
+    back to per-child link access the speed-up would vanish unnoticed.
+    """
+    from aiidalab_exafs.running_tasks import BatchLinkMaps, _job_record
+
+    class Exploding:
+        """Any attribute access means we hit the database per child."""
+
+        def __getattr__(self, name):
+            raise AssertionError(f"per-child link access: {name}")
+
+        def __contains__(self, item):
+            raise AssertionError(f"per-child link access: {item}")
+
+    batch = SimpleNamespace(
+        label="feff_batch_0000",
+        process_label="FeffBatchCalculation",
+        process_state=SimpleNamespace(value="finished"),
+        is_finished_ok=True,
+        pk=7,
+        inputs=Exploding(),
+        outputs=Exploding(),
+    )
+    # has_frame_idx, frame_counts (pk -> covered), snap_counts (pk -> produced)
+    link_maps = BatchLinkMaps(set(), {7: 10}, {7: 8})
+    record = _job_record(batch, link_maps)
+    assert record["covered"] == 10
+    assert record["done_snaps"] == 8
+
+    # A serial job whose pk is absent from has_frame_idx is potentials-only.
+    serial = SimpleNamespace(
+        label="",
+        process_label="FeffCalculation",
+        process_state=SimpleNamespace(value="finished"),
+        is_finished_ok=True,
+        pk=9,
+        inputs=Exploding(),
+        outputs=Exploding(),
+    )
+    assert _job_record(serial, BatchLinkMaps(set(), {}, {})) is None
+    assert _job_record(serial, BatchLinkMaps({9}, {}, {}))["covered"] == 1
+
+
 def test_create_breadcrumbs_wires_clicks():
     """Breadcrumb buttons forward their step index to the callback."""
-    from aiidalab_feff.common.navigation import create_breadcrumbs
+    from aiidalab_exafs.common.navigation import create_breadcrumbs
 
     seen = []
     container, buttons = create_breadcrumbs(["1 A", "2 B", "3 C"], seen.append)
@@ -236,7 +282,7 @@ def test_create_breadcrumbs_wires_clicks():
 
 def test_running_tasks_widget_refresh_without_profile():
     """The widget constructs and refresh swallows query errors (no AiiDA profile)."""
-    from aiidalab_feff.running_tasks import RunningTasksWidget
+    from aiidalab_exafs.running_tasks import RunningTasksWidget
 
     widget = RunningTasksWidget()
     widget.refresh()
