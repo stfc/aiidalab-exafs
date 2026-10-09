@@ -1,14 +1,14 @@
-#!/usr/bin/env bash
-# Build the aiidalab-feff AiiDAlab deployment image.
+#!/bin/bash
+# Build the aiidalab-exafs AiiDAlab deployment image.
 #
-# Usage:  ./containers/build.sh [--tag <tag>] [--no-cache] [-- <docker build args>]
-# Default tag: aiidalab-feff:latest
+# Usage:  ./docker/base/build.sh [--tag <tag>] [--no-cache] [-- <docker build args>]
+# Default tag: aiidalab-exafs:latest
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-TAG="aiidalab-feff:latest"
+TAG="aiidalab-exafs:latest"
 BUILD_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Use podman if docker is not available.
-ENGINE="${AIIDALAB_FEFF_ENGINE:-}"
+ENGINE="${AIIDALAB_EXAFS_ENGINE:-${AIIDALAB_FEFF_ENGINE:-}}"
 if [[ -z "$ENGINE" ]]; then
     if command -v docker &>/dev/null; then
         ENGINE=docker
@@ -51,4 +51,4 @@ echo
 echo "Built ${TAG}"
 echo "Run it with:"
 echo "  ${ENGINE} run -it --rm -p 8888:8888 -v \"\$HOME\":/home/jovyan ${TAG}"
-echo "or use ./containers/startup.sh (or an AiiDAlab startup script wrapper)."
+echo "or use ./docker/base/startup.sh (or an AiiDAlab startup script wrapper)."

@@ -22,3 +22,6 @@ htmlcov/
 
 # Serena language-server cache
 .serena/
+
+# aiida-explorer is built in the container image; local dev builds land here
+/explorer/
