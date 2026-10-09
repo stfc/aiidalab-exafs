@@ -19,6 +19,7 @@ Launch the app within AiiDAlab or run the main interface in a Jupyter environmen
 
 ```python
 from aiidalab_exafs.main import main
+
 main()
 ```
 
