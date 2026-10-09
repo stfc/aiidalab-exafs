@@ -11,7 +11,7 @@ from aiida.orm import Code, Computer, QueryBuilder
 from alc_aiidalab_widgets.widgets.code_setup import CodeSetupWidget
 from alc_aiidalab_widgets.widgets.status import Status
 
-from aiidalab_feff.models import InputModel, WorkflowModel
+from aiidalab_exafs.models import InputModel, WorkflowModel
 
 
 class ResourcesWidget(ipw.VBox):
@@ -72,6 +72,23 @@ class ResourcesWidget(ipw.VBox):
         self.refresh_button.add_class("feff-btn-secondary")
         self.refresh_button.on_click(self._refresh)
 
+        self.setup_feff_button = ipw.Button(
+            description="Set up FEFF code",
+            button_style="info",
+            icon="wrench",
+            tooltip="Automatically configure the localhost FEFF code from xraylarch",
+            layout={"width": "auto", "min_width": "150px"},
+        )
+        self.setup_feff_button.add_class("feff-btn-secondary")
+        self.setup_feff_button.on_click(self._on_setup_feff_code)
+
+        self.local_box = ipw.HBox(
+            [self.code_selector, self.setup_feff_button, self.refresh_button],
+            layout=ipw.Layout(
+                align_items="center", grid_gap="8px", flex_flow="row wrap", margin="4px 0"
+            ),
+        )
+
         self.walltime = ipw.IntText(
             value=3600,
             description="Walltime (s):",
@@ -93,7 +110,12 @@ class ResourcesWidget(ipw.VBox):
         self.remote_box = ipw.VBox(
             [
                 ipw.HBox(
-                    [self.computer_selector, self.code_selector, self.refresh_button],
+                    [
+                        self.computer_selector,
+                        self.code_selector,
+                        self.setup_feff_button,
+                        self.refresh_button,
+                    ],
                     layout=ipw.Layout(align_items="center", grid_gap="8px", flex_flow="row wrap"),
                 ),
                 ipw.HBox([self.walltime, self.num_nodes], layout=ipw.Layout(grid_gap="8px")),
@@ -199,6 +221,7 @@ class ResourcesWidget(ipw.VBox):
                 self.review_card,
                 ipw.HTML("<h3 style='margin-top:14px;'>Compute environment</h3>"),
                 self.run_local,
+                self.local_box,
                 self.remote_box,
                 self.configure_button,
                 self.advanced_accordion,
@@ -255,7 +278,7 @@ class ResourcesWidget(ipw.VBox):
             if self.input_model.trajectory is not None:
                 symbols = getattr(self.input_model.trajectory, "symbols", None)
             elif self.input_model.structure is not None:
-                from aiidalab_feff.utils import get_symbols
+                from aiidalab_exafs.utils import get_symbols
 
                 symbols = get_symbols(self.input_model.structure)
             if symbols and self.input_model.absorbing_atoms:
@@ -314,6 +337,7 @@ class ResourcesWidget(ipw.VBox):
 
     def _on_run_local_change(self, change):
         is_local = change["new"]
+        self.local_box.layout.display = "flex" if is_local else "none"
         self.remote_box.layout.display = "none" if is_local else "block"
         self.configure_button.layout.display = "none" if is_local else "inline-block"
         if is_local:
@@ -370,6 +394,26 @@ class ResourcesWidget(ipw.VBox):
             self.model.clean_scratch = self.clean_scratch.value
             self.model.stream_chunk_size = self.stream_chunk_size.value
 
+    def _on_setup_feff_code(self, _):
+        """Automatically set up localhost FEFF and Python codes."""
+        from aiidalab_exafs.codes import setup_feff_code, setup_python3_code
+
+        try:
+            self.status.warning("Configuring localhost FEFF and Python codes...")
+            feff_code, feff_created = setup_feff_code()
+            py_code, _ = setup_python3_code()
+            self._refresh_computers()
+            self._refresh_codes()
+            self._refresh_python_codes()
+            msg = (
+                f"FEFF code ready: {feff_code.full_label}"
+                if not feff_created
+                else f"Created code: {feff_code.full_label}"
+            )
+            self.status.success(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.status.failure(f"Failed to set up FEFF code: {exc}")
+
     def _refresh(self, _=None):
         self._refresh_computers()
         self._refresh_codes()
@@ -397,7 +441,7 @@ class ResourcesWidget(ipw.VBox):
             if isinstance(code, Code) and code.label:
                 lbl = code.label.lower()
                 plugin = getattr(code, "default_calc_job_plugin", None) or ""
-                if "feff" in lbl or plugin.startswith("feff"):
+                if plugin == "feff.feff" or plugin.startswith("feff") or "feff" in lbl:
                     feff_options.append((code.label, code.uuid))
                 elif "python" not in lbl:
                     other_options.append((code.label, code.uuid))

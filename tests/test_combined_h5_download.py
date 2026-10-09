@@ -13,15 +13,16 @@ from aiida.orm import ProcessNode
 from aiida_feff.data.archive import ExafsArchiveData
 from aiida_feff.data.pathcontributions import PathContributionsData
 
-from aiidalab_feff.common.file_handling import (
+from conftest import mock_of
+from aiidalab_exafs.common.file_handling import (
     export_combined_h5,
     find_combined_h5_node,
     get_combined_h5_bytes,
 )
-from aiidalab_feff.models import ResultsModel
-from aiidalab_feff.results import ResultsWidget
-from aiidalab_feff.results_library import ResultsLibraryWidget
-from aiidalab_feff.widgets.paths_explorer import PathContributionsExplorer
+from aiidalab_exafs.models import ResultsModel
+from aiidalab_exafs.results import ResultsWidget
+from aiidalab_exafs.results_library import ResultsLibraryWidget
+from aiidalab_exafs.widgets.paths_explorer import PathContributionsExplorer
 
 
 class _Context:
@@ -40,7 +41,7 @@ def create_mock_archive_node(
     pk=101, content=b"\x89HDF\r\n\x1a\nfake-archive-bytes", filename="ensemble_results.h5"
 ):
     """Create a mock ExafsArchiveData node satisfying trait validation."""
-    archive = MagicMock(spec=ExafsArchiveData)
+    archive = mock_of(ExafsArchiveData)
     archive.pk = pk
     archive.filename = filename
     archive.node_type = "data.archive.ExafsArchiveData."
@@ -61,7 +62,7 @@ def create_mock_archive_node(
 
 def create_mock_path_node(pk=202, content=b"\x89HDF\r\n\x1a\nfake-path-bytes"):
     """Create a mock PathContributionsData node satisfying trait validation."""
-    paths = MagicMock(spec=PathContributionsData)
+    paths = mock_of(PathContributionsData)
     paths.pk = pk
     paths.node_type = "data.pathcontributions.PathContributionsData."
     paths._raw.return_value = content
@@ -177,7 +178,7 @@ def test_results_widget_download_combined_h5():
     xas.set_array("chi_k", chi)
     archive = create_mock_archive_node(pk=456, content=b"HDF5-COMBINED-TEST-BYTES")
 
-    proc = MagicMock(spec=ProcessNode)
+    proc = mock_of(ProcessNode)
     proc.pk = 456
     proc.inputs = SimpleNamespace()
     proc.label = "Test Process"
@@ -283,7 +284,7 @@ def test_paths_explorer_widget_download_combined_h5():
 
     # When results_model with process_node is provided, its run pk is used
     rm = ResultsModel()
-    proc = MagicMock(spec=ProcessNode)
+    proc = mock_of(ProcessNode)
     proc.pk = 888
     rm.process_node = proc
     explorer_rm = PathContributionsExplorer(DummyStoreWithBytes(), results_model=rm)

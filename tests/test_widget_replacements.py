@@ -1,4 +1,4 @@
-"""Unit tests verifying alc-aiidalab-widgets replacements across aiidalab-feff."""
+"""Unit tests verifying alc-aiidalab-widgets replacements across aiidalab-exafs."""
 
 from __future__ import annotations
 
@@ -10,17 +10,17 @@ from alc_aiidalab_widgets.widgets.mesages import MessageBox
 from alc_aiidalab_widgets.widgets.status import Status
 from alc_aiidalab_widgets.widgets.structure import StructureViewWidget
 
-from aiidalab_feff.absorber import AbsorberSelectorWidget
-from aiidalab_feff.common.navigation import create_new_calculation_button
-from aiidalab_feff.experimental import ExperimentalSpectrumWidget
-from aiidalab_feff.input import (
+from aiidalab_exafs.absorber import AbsorberSelectorWidget
+from aiidalab_exafs.common.navigation import create_new_calculation_button
+from aiidalab_exafs.experimental import ExperimentalSpectrumWidget
+from aiidalab_exafs.input import (
     DatabaseInputWidget,
     StructureInputWidget,
     TrajectoryInputWidget,
 )
-from aiidalab_feff.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
-from aiidalab_feff.process import ProcessWidget
-from aiidalab_feff.results_library import ResultsLibraryWidget
+from aiidalab_exafs.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
+from aiidalab_exafs.process import ProcessWidget
+from aiidalab_exafs.results_library import ResultsLibraryWidget
 
 
 def test_input_widgets_embed_structure_view_widget():
@@ -131,7 +131,7 @@ def test_results_widget_defers_convergence_and_paths_tabs():
     measured 4.5 s on a 34k-path run) even though neither is visible when the
     results view first appears. They are marked dirty and drawn on selection.
     """
-    from aiidalab_feff.results import ResultsWidget
+    from aiidalab_exafs.results import ResultsWidget
 
     model = ResultsModel()
     widget = ResultsWidget(model)
@@ -176,7 +176,7 @@ def test_process_widget_defers_provenance_viewer_until_accordion_opens():
 
 def test_lazy_widget_builds_once_on_demand():
     """LazyWidget must not call its factory until something asks for the widget."""
-    from aiidalab_feff.common.lazy import LazyWidget
+    from aiidalab_exafs.common.lazy import LazyWidget
 
     calls = []
 
@@ -205,8 +205,8 @@ def test_app_defers_database_backed_widgets_until_revealed():
     a collapsed accordion or an unselected tab, which is what made a page
     refresh slow.
     """
-    from aiidalab_feff.input import InputWidget
-    from aiidalab_feff.results import ResultsWidget
+    from aiidalab_exafs.input import InputWidget
+    from aiidalab_exafs.results import ResultsWidget
 
     inputs = InputWidget(InputModel())
     assert inputs._database_lazy.built is False
@@ -221,8 +221,8 @@ def test_app_defers_database_backed_widgets_until_revealed():
 
 def test_experimental_selector_filters_in_sql_not_in_python():
     """The experimental selector narrows the query instead of post-filtering."""
-    from aiidalab_feff.common.database import ProjectedQueryWidget
-    from aiidalab_feff.experimental import ExperimentalXasDatabaseQueryWidget
+    from aiidalab_exafs.common.database import ProjectedQueryWidget
+    from aiidalab_exafs.experimental import ExperimentalXasDatabaseQueryWidget
 
     assert issubclass(ExperimentalXasDatabaseQueryWidget, ProjectedQueryWidget)
     filters = ExperimentalXasDatabaseQueryWidget.extra_filters
@@ -234,7 +234,7 @@ def test_experimental_selector_filters_in_sql_not_in_python():
 
 def test_results_widget_reset_restores_spectrum_tab():
     """Resetting ResultsWidget must restore the Spectrum tab so subsequent runs load fast."""
-    from aiidalab_feff.results import ResultsWidget
+    from aiidalab_exafs.results import ResultsWidget
 
     widget = ResultsWidget(ResultsModel())
     paths_rendered = []

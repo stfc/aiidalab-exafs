@@ -7,7 +7,7 @@ from typing import Any
 import ipywidgets as ipw
 from aiida_feff.data.parameters import VALID_EDGE_LABELS, FeffParameters
 
-from aiidalab_feff.models import WorkflowModel
+from aiidalab_exafs.models import WorkflowModel
 
 
 def _get_edge_options(absorber: str = "") -> list[tuple[str, str]]:
@@ -257,7 +257,7 @@ class FeffParametersWidget(ipw.VBox):
         self.advanced_toggle = ipw.ToggleButton(value=False, layout={"display": "none"})
 
         # Debye-Waller pre-screening widget (G4: dropped "In-Memory")
-        from aiidalab_feff.dw_widget import DebyeWallerScreeningWidget
+        from aiidalab_exafs.dw_widget import DebyeWallerScreeningWidget
 
         self.dw_screening = DebyeWallerScreeningWidget(self._input_model)
         self.dw_accordion = ipw.Accordion(children=[self.dw_screening])
@@ -347,7 +347,7 @@ class FeffParametersWidget(ipw.VBox):
             if getattr(self._input_model, "trajectory", None) is not None:
                 symbols = getattr(self._input_model.trajectory, "symbols", None)
             elif getattr(self._input_model, "structure", None) is not None:
-                from aiidalab_feff.utils import get_symbols
+                from aiidalab_exafs.utils import get_symbols
 
                 symbols = get_symbols(self._input_model.structure)
             if symbols and self._input_model.absorbing_atoms:

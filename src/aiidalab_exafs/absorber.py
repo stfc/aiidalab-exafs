@@ -8,8 +8,8 @@ from aiida.orm import StructureData
 from aiida_feff.workflows.ensemble import _resolve_absorber_sites
 from alc_aiidalab_widgets.widgets.status import Status
 
-from aiidalab_feff.models import InputModel
-from aiidalab_feff.utils import get_symbols
+from aiidalab_exafs.models import InputModel
+from aiidalab_exafs.utils import get_symbols
 
 
 class AbsorberSelectorWidget(ipw.VBox):

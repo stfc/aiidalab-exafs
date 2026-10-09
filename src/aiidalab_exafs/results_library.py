@@ -10,12 +10,12 @@ import ipywidgets as ipw
 import numpy as np
 from aiida import orm
 from aiida.orm import QueryBuilder, StructureData, WorkChainNode, load_node
-from aiidalab_feff.common.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 from alc_aiidalab_widgets.widgets.structure import StructureViewWidget
 
-from aiidalab_feff.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
-from aiidalab_feff.running_tasks import (
+from aiidalab_exafs.common.download import Download
+from aiidalab_exafs.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
+from aiidalab_exafs.running_tasks import (
     _TERMINAL_STATES,
     WORKCHAIN_LABEL,
     _count_structures,

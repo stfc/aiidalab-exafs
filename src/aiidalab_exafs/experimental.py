@@ -15,8 +15,8 @@ from alc_aiidalab_widgets.widgets.file_handling import FileUploadWidget
 from alc_aiidalab_widgets.widgets.file_viewer import SinglefileDataViewer
 from alc_aiidalab_widgets.widgets.status import Status
 
-from aiidalab_feff.common.database import ProjectedQueryWidget
-from aiidalab_feff.models import ResultsModel
+from aiidalab_exafs.common.database import ProjectedQueryWidget
+from aiidalab_exafs.models import ResultsModel
 
 
 class ExperimentalXasDatabaseQueryWidget(ProjectedQueryWidget):

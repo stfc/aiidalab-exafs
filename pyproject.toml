@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aiidalab-feff"
+name = "aiidalab-exafs"
 version = "0.1.0a1"
 description = "AiiDAlab app for FEFF-based EXAFS and MD-EXAFS calculations"
 authors = [{name = "J. Kane Shenton", email = "kane.shenton@stfc.ac.uk"}]
@@ -24,7 +24,7 @@ dependencies = [
     "aiida-feff>=0.1.0a1",
     "aiidalab",
     "aiidalab-widgets-base",
-    "alc-aiidalab-widgets",
+    "alc-aiidalab-widgets>=0.1.0",
     "ipywidgets>=8",
     "ipympl>=0.9",
     "traitlets>=5",
@@ -36,10 +36,17 @@ dependencies = [
     "altair>=5.0",
     "md-exafs>=0.3.0,<0.4",
     "marimo>=0.16.4",
-    "jupyter-server-proxy",
-    # REST API for the aiida-explorer button
-    "flask-cors",
+    # jupyter-server-proxy 4.x needs jupyter-server 2.x (current AiiDAlab images);
+    # 3.2.x still works on the classic Notebook 6 server (older images), where
+    # proxy.py applies its websocket workarounds.
+    "jupyter-server-proxy>=3.2",
+    # Runtime imports of `aiida.restapi.run_api`, which backs the
+    # aiida-explorer button via `verdi restapi`. Neither is imported from
+    # src/, but dropping either makes `verdi restapi` fail to start with
+    # ModuleNotFoundError. flask-cors is needed even though the explorer is
+    # served same-origin.
     "flask-restful",
+    "flask-cors",
     "ipydatagrid>=1.4.0",
 ]
 
@@ -53,11 +60,30 @@ pre-commit = [
     "ruff>=0.6.0",
     "mypy>=1.10",
 ]
+dev = [
+    "click",
+    "toml",
+]
+docs = [
+    "sphinx>=8.0.0",
+    "piccolo-theme>=0.14.0",
+    "sphinx-toolbox",
+    "numpydoc",
+]
+
+[project.scripts]
+# Deliberately not named `feff8l`: xraylarch installs a console script of that
+# name and whichever package is installed last would silently win.
+exafs-feff8l = "aiidalab_exafs.codes:feff8l_cli"
 
 [project.entry-points."aiidalab.apps"]
-aiidalab_feff = "aiidalab_feff:main"
+exafs = "aiidalab_exafs:main"
+aiidalab_exafs = "aiidalab_exafs:main"
 
-
+[project.entry-points.jupyter_serverproxy_servers]
+exafs-restapi = "aiidalab_exafs.proxy:setup_restapi"
+exafs-marimo = "aiidalab_exafs.proxy:setup_marimo"
+exafs-explorer = "aiidalab_exafs.proxy:setup_explorer"
 
 [tool.ruff]
 target-version = "py310"
@@ -91,10 +117,13 @@ select = [
 ]
 ignore = [
     "D100",
+    "D102",
     "D104",
+    "D107",
     "D203",
     "D213",
     "D416",
+    "E501",
     "N806",
     "PLC0415",
     "PLR0915",
@@ -107,24 +136,15 @@ max-branches = 24
 max-statements = 100
 
 [tool.ruff.lint.per-file-ignores]
-"src/aiidalab_feff/absorber.py" = ["D107", "D102"]
-"src/aiidalab_feff/experimental.py" = ["D107", "D102"]
-"src/aiidalab_feff/input.py" = ["D107", "D102"]
-"src/aiidalab_feff/main.py" = ["D107", "D102"]
-"src/aiidalab_feff/process.py" = ["D107", "D102"]
-"src/aiidalab_feff/resources.py" = ["D107", "D102"]
-"src/aiidalab_feff/results.py" = ["D107", "D102"]
-"src/aiidalab_feff/running_tasks.py" = ["D107", "D102"]
-"src/aiidalab_feff/widgets/paths_explorer.py" = ["D107", "D102"]
-"src/aiidalab_feff/workflow.py" = ["D107", "D102"]
-"notebooks/*.py" = ["F841", "B018", "E501", "BLE001", "S110", "D", "N803", "PLR0912", "PLR0913", "PLR1711", "PLR5501"]
+"docker/**/*.py" = ["PLR0912", "PLR0915", "D"]
+"notebooks/*.py" = ["F841", "B018", "E501", "BLE001", "S110", "D", "N802", "N803", "PLR0912", "PLR0913", "PLR1711", "PLR5501"]
 "tests/**/*.py" = ["D", "N806", "PLC0415", "B017", "E501", "PLR2004"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.isort]
-known-first-party = ["aiidalab_feff"]
+known-first-party = ["aiidalab_exafs"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -150,7 +170,3 @@ show_error_codes = true
 
 [tool.uv]
 prerelease = "allow"
-
-[tool.uv.sources]
-aiida-feff = { path = "../stfc_aiida-feff", editable = true }
-alc-aiidalab-widgets = { path = "../alc-aiidalab-widgets", editable = true }

@@ -56,7 +56,9 @@ class DebyeWallerScreeningWidget(ipw.VBox):
         )
         self.run_button.on_click(self._on_run)
 
-        onclick_js = "window.open('http://' + window.location.hostname + ':2718/?file=debye_waller.py', '_blank')"
+        from aiidalab_exafs.proxy import proxy_url_js
+
+        onclick_js = proxy_url_js("exafs-marimo", "file=debye_waller.py")
         style_css = (
             "display: inline-flex; align-items: center; justify-content: center; "
             "height: 28px; padding: 0 12px; margin-left: 6px; text-decoration: none; "
@@ -66,7 +68,7 @@ class DebyeWallerScreeningWidget(ipw.VBox):
         self.marimo_link = ipw.HTML(
             f'<a href="javascript:void(0)" onclick="{onclick_js}" '
             f'class="jupyter-widgets jupyter-button widget-button" style="{style_css}" '
-            'title="Open dedicated Marimo Debye-Waller notebook on port 2718">'
+            'title="Open dedicated Marimo Debye-Waller notebook">'
             '<span style="margin-right: 5px;">⚡</span> Open in Marimo ↗</a>'
         )
 

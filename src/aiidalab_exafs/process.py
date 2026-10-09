@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-from urllib.parse import quote
 
 import ipywidgets as ipw
 from aiida import engine, orm
@@ -15,8 +14,8 @@ from alc_aiidalab_widgets.widgets.process_node_view import ProcessNodeViewerWidg
 from alc_aiidalab_widgets.widgets.status import Status
 from IPython.display import Javascript, display
 
-from aiidalab_feff.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
-from aiidalab_feff.running_tasks import (
+from aiidalab_exafs.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
+from aiidalab_exafs.running_tasks import (
     _aggregate_jobs,
     _collect_jobs,
     _estimate_expected_calculations,
@@ -370,15 +369,22 @@ class ProcessWidget(ipw.VBox):
         self.explorer_button.layout.display = "inline-block"
         self._monitor_process()
 
-    AIIDA_EXPLORER_REST_API_URL = "http://localhost:5050/api/v4"
-    AIIDA_EXPLORER_APP_URL = "https://aiidateam.github.io/aiida-explorer/"
-
     def _open_aiida_explorer(self, uuid: str):
-        """Open the node in the hosted aiida-explorer app in a new tab."""
-        api_url = quote(self.AIIDA_EXPLORER_REST_API_URL, safe="")
-        query = f"api_url={api_url}&uuid={uuid}"
-        url = f"{self.AIIDA_EXPLORER_APP_URL}?{query}"
-        js = f"window.open('{url}', '_blank');"
+        """Open the node in the aiida-explorer app in a new tab.
+
+        Both the SPA (``exafs-explorer``) and the AiiDA REST API
+        (``exafs-restapi``) are served through Jupyter's authenticated reverse
+        proxy, so they share an origin and the session cookie.
+        """
+        js = f"""
+        (function() {{
+            var base = (document.body && document.body.getAttribute('data-base-url')) || '/';
+            if (!base.endsWith('/')) base += '/';
+            var proxiedApi = window.location.origin + base + 'exafs-restapi/api/v4';
+            var explorer = base + 'exafs-explorer/?api_url=' + encodeURIComponent(proxiedApi) + '&uuid={uuid}';
+            window.open(explorer, '_blank');
+        }})();
+        """
         display(Javascript(js))
 
     def _on_open_explorer(self, _):
@@ -706,7 +712,7 @@ def _resolve_absorber_metadata(process_node, averaged_xas: dict) -> tuple[str, s
         else:
             structures = process_node.inputs.structures
             first_struct = next(iter(structures.values()))
-        from aiidalab_feff.utils import get_symbols
+        from aiidalab_exafs.utils import get_symbols
 
         symbols = get_symbols(first_struct)
         elements = sorted({symbols[i] for i in atoms if 0 <= i < len(symbols)})

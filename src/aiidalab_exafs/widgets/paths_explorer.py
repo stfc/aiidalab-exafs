@@ -7,13 +7,13 @@ import numpy as np
 import pandas as pd
 from aiida_feff.data.archive import ExafsArchiveData
 from aiida_feff.data.pathcontributions import PathContributionsData
-from aiidalab_feff.common.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 from ipydatagrid import DataGrid, TextRenderer
 from IPython.display import display
 from md_exafs.viz import group_path_results
 
-from aiidalab_feff.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
+from aiidalab_exafs.common.download import Download
+from aiidalab_exafs.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
 
 
 class PathContributionsExplorer(ipw.VBox):
@@ -33,24 +33,26 @@ class PathContributionsExplorer(ipw.VBox):
         self.results_model = results_model
         self.path_groups = self._load_path_groups()
 
+        from aiidalab_exafs.proxy import proxy_url_js
+
         self.status = Status()
-        onclick_js = "window.open('http://' + window.location.hostname + ':2718/?file=paths_explorer.py', '_blank')"
+        onclick_js = proxy_url_js("exafs-marimo", "file=paths_explorer.py")
         deep_dive_card = ipw.HTML(
             f"""
-            <div style="margin-top: 16px; padding: 12px 16px; border: 1px solid var(--feff-rule, #D5DBE1); background: var(--feff-surface, #F4F6F8); border-radius: 4px;">
+            <div style="margin-top: 16px; padding: 12px 16px; border: 1px solid var(--exafs-rule, #D5DBE1); background: var(--exafs-surface, #F4F6F8); border-radius: 4px;">
               <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
                 <div style="flex: 1; min-width: 260px;">
-                  <div style="font-weight: 600; font-size: 13px; color: var(--feff-ink, #1F2933);">
+                  <div style="font-weight: 600; font-size: 13px; color: var(--exafs-ink, #1F2933);">
                     Deep dive: Debye–Waller factor matching & 3D scattering analysis
                   </div>
-                  <div style="font-size: 12px; color: var(--feff-ink-muted, #52606D); margin-top: 2px;">
+                  <div style="font-size: 12px; color: var(--exafs-ink-muted, #52606D); margin-top: 2px;">
                     Correlate FEFF scattering paths with molecular dynamics Mean Square Relative Displacement (MSRD) disorder in Marimo.
                   </div>
                 </div>
                 <div>
                   <a href="javascript:void(0)" onclick="{onclick_js}"
                      class="jupyter-widgets jupyter-button widget-button"
-                     style="display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 16px; text-decoration: none; background-color: var(--feff-accent, #1B5E9B); color: white; font-weight: 500; font-size: 12.5px; border-radius: 4px; cursor: pointer; white-space: nowrap;">
+                     style="display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 16px; text-decoration: none; background-color: var(--exafs-accent, #1B5E9B); color: white; font-weight: 500; font-size: 12.5px; border-radius: 4px; cursor: pointer; white-space: nowrap;">
                     Open Debye–Waller analysis (Marimo) ↗
                   </a>
                 </div>

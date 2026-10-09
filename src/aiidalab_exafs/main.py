@@ -5,24 +5,24 @@ from __future__ import annotations
 import ipywidgets as ipw
 from alc_aiidalab_widgets.widgets.status import Status
 
-from aiidalab_feff.common.navigation import (
+from aiidalab_exafs.common.navigation import (
     create_action_bar,
     create_breadcrumbs,
     create_new_calculation_button,
     update_breadcrumbs,
 )
-from aiidalab_feff.input import InputWidget
-from aiidalab_feff.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
-from aiidalab_feff.process import ProcessWidget
-from aiidalab_feff.resources import ResourcesWidget
-from aiidalab_feff.results import ResultsWidget
-from aiidalab_feff.results_library import ResultsLibraryWidget
-from aiidalab_feff.styles import get_style_widget
-from aiidalab_feff.workflow import FeffParametersWidget
+from aiidalab_exafs.input import InputWidget
+from aiidalab_exafs.models import InputModel, ResultsModel, SubmissionModel, WorkflowModel
+from aiidalab_exafs.process import ProcessWidget
+from aiidalab_exafs.resources import ResourcesWidget
+from aiidalab_exafs.results import ResultsWidget
+from aiidalab_exafs.results_library import ResultsLibraryWidget
+from aiidalab_exafs.styles import get_style_widget
+from aiidalab_exafs.workflow import FeffParametersWidget
 
 
-class FeffApp(ipw.VBox):
-    """AiiDAlab FEFF app with a consolidated 5-step wizard and unified Runs browser."""
+class ExafsApp(ipw.VBox):
+    """AiiDAlab EXAFS app with a consolidated 5-step wizard and unified Runs browser."""
 
     STEP_INPUT = 0
     STEP_SETTINGS = 1
@@ -161,6 +161,7 @@ class FeffApp(ipw.VBox):
                 self.app_tabs,
             ]
         )
+        self.add_class("exafs-app")
         self.add_class("feff-app")
 
         self._current_step = self.STEP_INPUT
@@ -331,9 +332,13 @@ class FeffApp(ipw.VBox):
             self.next_button_bottom.layout.display = "none"
 
 
+# Backward compatibility alias
+FeffApp = ExafsApp
+
+
 def main():
     """Return the main app widget."""
-    return FeffApp()
+    return ExafsApp()
 
 
-__all__ = ["FeffApp", "main"]
+__all__ = ["ExafsApp", "FeffApp", "main"]

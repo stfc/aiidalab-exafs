@@ -13,17 +13,17 @@ import numpy as np
 from aiida import orm
 from aiida_feff.calcfunctions.experimental import scale_simulated_spectrum, scaled_chi_arrays
 from aiida_feff.data.xasdata import XasData
-from aiidalab_feff.common.download import Download
 from alc_aiidalab_widgets.widgets.status import Status
 from md_exafs.spectra import average_chi_arrays
 
-from aiidalab_feff.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
-from aiidalab_feff.common.lazy import LazyWidget
-from aiidalab_feff.experimental import ExperimentalSpectrumWidget
-from aiidalab_feff.models import ResultsModel
-from aiidalab_feff.running_tasks import _reference_structure
-from aiidalab_feff.styles import COLOR_EXPERIMENTAL, COLOR_SIMULATION, COLOR_WINDOW
-from aiidalab_feff.widgets.paths_explorer import PathContributionsExplorer
+from aiidalab_exafs.common.download import Download
+from aiidalab_exafs.common.file_handling import find_combined_h5_node, get_combined_h5_bytes
+from aiidalab_exafs.common.lazy import LazyWidget
+from aiidalab_exafs.experimental import ExperimentalSpectrumWidget
+from aiidalab_exafs.models import ResultsModel
+from aiidalab_exafs.running_tasks import _reference_structure
+from aiidalab_exafs.styles import COLOR_EXPERIMENTAL, COLOR_SIMULATION, COLOR_WINDOW
+from aiidalab_exafs.widgets.paths_explorer import PathContributionsExplorer
 
 # k-weight options: (display label, exponent n in kⁿχ(k))
 _KWEIGHTS = [
@@ -562,10 +562,9 @@ class ResultsWidget(ipw.VBox):
         self.reset_button.add_class("feff-btn-secondary")
         self.reset_button.on_click(self._on_refresh)
 
-        onclick_js = (
-            "window.open('http://' + window.location.hostname "
-            "+ ':2718/?file=debye_waller.py', '_blank')"
-        )
+        from aiidalab_exafs.proxy import proxy_url_js
+
+        onclick_js = proxy_url_js("exafs-marimo", "file=debye_waller.py")
         self.marimo_dw_btn = ipw.HTML(
             f'<a href="javascript:void(0)" onclick="{onclick_js}" '
             'class="jupyter-widgets jupyter-button widget-button" '

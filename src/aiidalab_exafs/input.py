@@ -9,17 +9,17 @@ from aiida.orm import StructureData, TrajectoryData
 from alc_aiidalab_widgets.widgets.status import Status
 from alc_aiidalab_widgets.widgets.structure import StructureViewWidget
 
-from aiidalab_feff.absorber import AbsorberSelectorWidget
-from aiidalab_feff.common.database import ProjectedQueryWidget
-from aiidalab_feff.common.file_handling import (
+from aiidalab_exafs.absorber import AbsorberSelectorWidget
+from aiidalab_exafs.common.database import ProjectedQueryWidget
+from aiidalab_exafs.common.file_handling import (
     build_step_indices,
     read_cif_xyz_to_structure_data,
     read_file_list_to_structures,
     read_xyz_to_trajectory_data,
 )
-from aiidalab_feff.common.lazy import LazyWidget
-from aiidalab_feff.models import InputModel
-from aiidalab_feff.utils import validate_trajectory_size
+from aiidalab_exafs.common.lazy import LazyWidget
+from aiidalab_exafs.models import InputModel
+from aiidalab_exafs.utils import validate_trajectory_size
 
 
 class StructureInputWidget(ipw.VBox):

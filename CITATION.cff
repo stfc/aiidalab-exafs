@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+title: "AiiDAlab EXAFS App"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Shenton
+    given-names: "J. Kane"
+    email: "kane.shenton@stfc.ac.uk"
+repository-code: "https://github.com/stfc/aiidalab-exafs"
+abstract: "AiiDAlab app for FEFF-based EXAFS and MD-EXAFS calculations with full AiiDA provenance tracking"
+license: BSD-3-Clause
+version: 0.1.0a1

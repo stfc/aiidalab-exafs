@@ -4,8 +4,8 @@ import numpy as np
 from ase.build import bulk
 from md_exafs.paths import PathResult
 
-from aiidalab_feff.dw_widget import DebyeWallerScreeningWidget
-from aiidalab_feff.widgets.paths_explorer import PathContributionsExplorer
+from aiidalab_exafs.dw_widget import DebyeWallerScreeningWidget
+from aiidalab_exafs.widgets.paths_explorer import PathContributionsExplorer
 
 
 class DummyModel:

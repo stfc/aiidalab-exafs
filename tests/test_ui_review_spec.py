@@ -5,13 +5,13 @@ from __future__ import annotations
 import numpy as np
 from aiida_feff.data.xasdata import XasData
 
-from aiidalab_feff.main import FeffApp
-from aiidalab_feff.models import InputModel, ResultsModel, WorkflowModel
-from aiidalab_feff.resources import ResourcesWidget
-from aiidalab_feff.results import ResultsWidget
-from aiidalab_feff.results_library import _format_duration
-from aiidalab_feff.widgets.paths_explorer import PathContributionsExplorer
-from aiidalab_feff.workflow import FeffParametersWidget
+from aiidalab_exafs.main import FeffApp
+from aiidalab_exafs.models import InputModel, ResultsModel, WorkflowModel
+from aiidalab_exafs.resources import ResourcesWidget
+from aiidalab_exafs.results import ResultsWidget
+from aiidalab_exafs.results_library import _format_duration
+from aiidalab_exafs.widgets.paths_explorer import PathContributionsExplorer
+from aiidalab_exafs.workflow import FeffParametersWidget
 
 
 def test_feff_parameters_presets():
@@ -217,7 +217,7 @@ def test_runs_table_truncation_and_open_button():
     """Runs table truncates long labels with hover tooltip and includes Open action button."""
     import datetime
 
-    from aiidalab_feff.results_library import _build_unified_table_rows, _cell
+    from aiidalab_exafs.results_library import _build_unified_table_rows, _cell
 
     # Check cell tooltip and truncation
     long_label = "PB_pristine_222supercell_K_2026-09-24"
@@ -265,7 +265,7 @@ def test_runs_table_truncation_and_open_button():
 
 def test_compute_chi_from_params_smooth():
     """compute_chi_from_params generates smooth, non-oscillating chi(k) on fine grid."""
-    from aiidalab_feff.widgets.paths_explorer import compute_chi_from_params
+    from aiidalab_exafs.widgets.paths_explorer import compute_chi_from_params
 
     k_coarse = np.array([0.0, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 18.0, 20.0])
     amp = np.ones_like(k_coarse) * 0.5
