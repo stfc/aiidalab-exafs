@@ -23,7 +23,10 @@ dependencies = [
     "aiida-core>=2.3,<3",
     "aiida-feff>=0.1.0a1",
     "aiidalab",
-    "aiidalab-widgets-base",
+    # 2.x pins ipywidgets~=7.7, which conflicts with ipywidgets>=8 below.
+    # 3.x is only published as pre-releases (pip skips those unless the
+    # specifier names one); 3.0.0a3 is what uv.lock resolves to.
+    "aiidalab-widgets-base>=3.0.0a3",
     "alc-aiidalab-widgets>=0.1.0",
     "ipywidgets>=8",
     "ipympl>=0.9",
