@@ -137,7 +137,7 @@ max-statements = 100
 
 [tool.ruff.lint.per-file-ignores]
 "docker/**/*.py" = ["PLR0912", "PLR0915", "D"]
-"notebooks/*.py" = ["F841", "B018", "E501", "BLE001", "S110", "D", "N802", "N803", "PLR0912", "PLR0913", "PLR1711", "PLR5501"]
+"notebooks/*.py" = ["F841", "B018", "E501", "BLE001", "S110", "D", "N802", "N803", "PLR0912", "PLR0913", "PLR0917", "PLR1711", "PLR5501"]
 "tests/**/*.py" = ["D", "N806", "PLC0415", "B017", "E501", "PLR2004"]
 
 [tool.ruff.lint.pydocstyle]

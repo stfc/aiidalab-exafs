@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 def test_is_running_workflow():
     """_is_running_workflow accepts only unfinished EnsembleExafsWorkChains."""
-    from unittest.mock import MagicMock
 
     from aiida.orm import WorkChainNode
     from conftest import mock_of

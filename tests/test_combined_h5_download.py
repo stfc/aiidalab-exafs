@@ -5,15 +5,14 @@ from __future__ import annotations
 import io
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 from aiida.orm import ProcessNode
 from aiida_feff.data.archive import ExafsArchiveData
 from aiida_feff.data.pathcontributions import PathContributionsData
-
 from conftest import mock_of
+
 from aiidalab_exafs.common.file_handling import (
     export_combined_h5,
     find_combined_h5_node,
