@@ -23,6 +23,7 @@ from aiidalab_exafs.experimental import ExperimentalSpectrumWidget
 from aiidalab_exafs.models import ResultsModel
 from aiidalab_exafs.running_tasks import _reference_structure
 from aiidalab_exafs.styles import COLOR_EXPERIMENTAL, COLOR_SIMULATION, COLOR_WINDOW
+from aiidalab_exafs.utils import run_with_portal
 from aiidalab_exafs.widgets.paths_explorer import PathContributionsExplorer
 
 # k-weight options: (display label, exponent n in kⁿχ(k))
@@ -706,6 +707,10 @@ class ResultsWidget(ipw.VBox):
         simulated = self._selected_export_spectrum()
         if simulated is None:
             return
+        self.status.value = "Saving scaled spectrum..."
+        run_with_portal(lambda: self._save_scaled_spectrum(simulated))
+
+    def _save_scaled_spectrum(self, simulated):
         try:
             scaled = scale_simulated_spectrum(
                 simulated,

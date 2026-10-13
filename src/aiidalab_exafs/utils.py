@@ -2,7 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
+
 from aiida.orm import ProcessNode, StructureData, TrajectoryData
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def run_with_portal(fn: Callable[[], None]) -> None:
+    """Run ``fn``, which may call AiiDA process functions, from a widget callback.
+
+    AiiDA can only run a process function synchronously inside a running event
+    loop (the Jupyter/Voila kernel) when the current task has a greenback portal.
+    Widget callbacks don't have one, so ``fn`` is scheduled as a task on the
+    loop with a portal. ``fn`` must handle its own exceptions and UI updates.
+    Without a running loop, it is simply called.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        fn()
+        return
+    from plumpy import run_with_portal as _run_with_portal
+
+    task = loop.create_task(_run_with_portal(fn))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def get_trajectory_size_mb(trajectory: TrajectoryData) -> float:

@@ -17,6 +17,7 @@ from alc_aiidalab_widgets.widgets.status import Status
 
 from aiidalab_exafs.common.database import ProjectedQueryWidget
 from aiidalab_exafs.models import ResultsModel
+from aiidalab_exafs.utils import run_with_portal
 
 
 class ExperimentalXasDatabaseQueryWidget(ProjectedQueryWidget):
@@ -204,6 +205,10 @@ class ExperimentalSpectrumWidget(ipw.VBox):
         parameters = {"autobk": True, "group": self.group.value}
         if labels:
             parameters["labels"] = labels
+        self.status.value = "Importing experimental spectrum..."
+        run_with_portal(lambda: self._import(parameters))
+
+    def _import(self, parameters: dict):
         try:
             spectrum = import_experimental_spectrum(self.source, orm.Dict(dict=parameters))
             spectrum.label = f"Experimental: {self.source.filename}"
